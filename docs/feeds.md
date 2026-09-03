@@ -91,6 +91,20 @@ both; only the base URL differs.
 
 ---
 
+## Refresh behaviour
+
+The two agencies handle conditional GETs differently, verified 2026-09-03:
+
+| | `If-None-Match` / `If-Modified-Since` | Notes |
+|---|---|---|
+| MBus | **honoured** — returns `304 Not Modified` | Nothing transfers on an unchanged refresh. |
+| TheRide | **ignored** — returns `200` with the full body | Serves a valid `ETag` (`"6a8ae767-2625db"`) and `Last-Modified`, but their Pantheon/Varnish front end resends the body regardless. |
+
+So the ingest cannot rely on 304 alone to avoid needless work. It also records a
+sha256 of every loaded ZIP in `feed_versions` and skips the database reload when
+the content is unchanged, which is what actually protects the 200k-row load. The
+2.4 MB re-download from TheRide is the residual cost, once a week.
+
 ## What the feeds actually contain
 
 Static feed scale (2026-08-23 publication, both agencies):
