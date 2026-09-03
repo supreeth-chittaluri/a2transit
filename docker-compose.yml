@@ -12,7 +12,11 @@ services:
   db:
     # PostGIS is not optional: M4 generates footpaths with ST_DWithin over
     # geography columns, so a plain postgres image will not do.
-    image: postgis/postgis:16-3.4
+    #
+    # imresamu/postgis rather than the official postgis/postgis because the
+    # latter is amd64-only and runs under emulation on Apple Silicon, which is
+    # a real cost during the bulk stop_times COPY. Same PG16 / PostGIS 3.4.
+    image: imresamu/postgis:16-3.4
     environment:
       POSTGRES_USER: a2transit
       POSTGRES_PASSWORD: a2transit
