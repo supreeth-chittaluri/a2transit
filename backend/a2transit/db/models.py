@@ -305,6 +305,150 @@ class Transfer(Base):
     )
 
 
+class RoutePattern(Base):
+    """A RAPTOR "route": the set of trips sharing one ordered stop sequence.
+
+    GTFS routes are too coarse for RAPTOR — TheRide's route 4 has two, one per
+    direction, and its 30 routes expand to 86 patterns. Across both feeds 42
+    GTFS routes become 117 patterns over 12,667 trips, which is the number that
+    actually bounds a RAPTOR round.
+
+    The signature hashes the stop sequence *and* the per-stop boarding rules.
+    Today no two trips share a stop sequence while differing on pickup or
+    drop-off rules, so including the rules changes nothing — but if a feed ever
+    publishes that, the trips must land in different patterns rather than
+    silently inheriting one another's boarding rules.
+    """
+
+    __tablename__ = "route_patterns"
+
+    agency_source: Mapped[AgencySource] = _agency_source_pk()
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    route_id: Mapped[str] = mapped_column(String(64))
+    direction_id: Mapped[int | None] = mapped_column(SmallInteger)
+    #: sha1 of the stop sequence and boarding rules; unique within an agency.
+    signature: Mapped[str] = mapped_column(String(40))
+    stop_count: Mapped[int] = mapped_column(Integer)
+    trip_count: Mapped[int] = mapped_column(Integer)
+    #: True when some trip overtakes another within a single service day, so
+    #: the per-position departure columns are not sorted and the router cannot
+    #: binary-search this pattern. One MBus pattern does this today.
+    has_overtaking: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_source", "route_id"],
+            ["routes.agency_source", "routes.route_id"],
+        ),
+        Index("ix_route_patterns_route", "agency_source", "route_id"),
+        Index("uq_route_patterns_signature", "agency_source", "signature", unique=True),
+    )
+
+
+class PatternStop(Base):
+    """The ordered stops of one pattern. `position` is a 0-based index.
+
+    Deliberately not GTFS's stop_sequence, which is only required to increase —
+    it may skip values. RAPTOR indexes into a pattern by position, so the two
+    must not be confused.
+    """
+
+    __tablename__ = "pattern_stops"
+
+    agency_source: Mapped[AgencySource] = _agency_source_pk()
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    stop_id: Mapped[str] = mapped_column(String(64))
+    can_board: Mapped[bool] = mapped_column(Boolean)
+    can_alight: Mapped[bool] = mapped_column(Boolean)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_source", "pattern_id"],
+            ["route_patterns.agency_source", "route_patterns.pattern_id"],
+        ),
+        ForeignKeyConstraint(
+            ["agency_source", "stop_id"],
+            ["stops.agency_source", "stops.stop_id"],
+        ),
+    )
+
+
+class StopPattern(Base):
+    """Reverse index: which patterns serve a stop, and at what position.
+
+    The first thing a RAPTOR round does is ask "which routes serve the stops I
+    improved last round", so this is the hot lookup.
+
+    `position` is in the primary key so a loop pattern visiting one stop twice
+    is representable. No pattern in either feed does that today, but keying it
+    out would turn a future loop route into a constraint violation during
+    preprocessing rather than a pattern the router simply handles.
+    """
+
+    __tablename__ = "stop_patterns"
+
+    agency_source: Mapped[AgencySource] = _agency_source_pk()
+    stop_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_source", "pattern_id"],
+            ["route_patterns.agency_source", "route_patterns.pattern_id"],
+        ),
+        Index("ix_stop_patterns_lookup", "agency_source", "stop_id"),
+    )
+
+
+class PatternTrip(Base):
+    """Trips of one pattern, ordered by departure from its first stop.
+
+    RAPTOR's "earliest trip you can catch at position i having arrived at time
+    t" is a binary search over this order, which is only valid if trips never
+    overtake one another — if A leaves the first stop before B, A must not
+    arrive anywhere after B.
+
+    `trip_order` therefore ranks trips **within (pattern, service_id)**, not
+    across the whole pattern. Ordering globally interleaves trips from
+    different service days, whose running times differ, and manufactures
+    overtaking that never happens on any real day: it produces violations in 12
+    patterns, of which 11 vanish once each service day is ordered on its own.
+
+    The twelfth is real. One MBus pattern has trips genuinely overtaking by up
+    to 60 s within one service day, so `RoutePattern.has_overtaking` marks the
+    patterns where the router must scan instead of binary-searching.
+    """
+
+    __tablename__ = "trips_by_pattern"
+
+    agency_source: Mapped[AgencySource] = _agency_source_pk()
+    pattern_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    trip_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    service_id: Mapped[str] = mapped_column(String(64))
+    #: Position in departure order within the pattern, 0-based.
+    trip_order: Mapped[int] = mapped_column(Integer)
+    first_departure: Mapped[int] = mapped_column(Integer)
+    last_arrival: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["agency_source", "pattern_id"],
+            ["route_patterns.agency_source", "route_patterns.pattern_id"],
+        ),
+        ForeignKeyConstraint(
+            ["agency_source", "trip_id"],
+            ["trips.agency_source", "trips.trip_id"],
+        ),
+        Index("ix_trips_by_pattern_order", "agency_source", "pattern_id", "trip_order"),
+        Index("ix_trips_by_pattern_service", "agency_source", "service_id"),
+    )
+
+
 class FeedVersion(Base):
     """One row per successful ingest — the audit trail for the weekly refresh.
 
@@ -343,6 +487,10 @@ class FeedVersion(Base):
 # back to front, so foreign keys are satisfied in both directions. The ingest
 # depends on this ordering being right — see a2transit.ingest.loader.
 TABLES_IN_DEPENDENCY_ORDER: tuple[type[Base], ...] = (
+    PatternTrip,
+    StopPattern,
+    PatternStop,
+    RoutePattern,
     StopTime,
     Transfer,
     Trip,
