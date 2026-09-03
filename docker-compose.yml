@@ -1,0 +1,47 @@
+# Local development stack: PostGIS for the transit graph, Redis for realtime.
+#
+#   docker compose up -d
+#   docker compose ps          # both services should report (healthy)
+#
+# Nothing here needs a paid plan or a licence key. In production these are
+# replaced by Neon/Supabase (Postgres) and Upstash (Redis) free tiers.
+
+name: a2transit
+
+services:
+  db:
+    # PostGIS is not optional: M4 generates footpaths with ST_DWithin over
+    # geography columns, so a plain postgres image will not do.
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: a2transit
+      POSTGRES_PASSWORD: a2transit
+      POSTGRES_DB: a2transit
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Scripts here run once, on first initialisation of an empty data volume.
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U a2transit -d a2transit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    # Realtime state is a cache rebuilt by the poller within one poll interval,
+    # so persistence buys nothing and appendonly writes just add disk churn.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db_data:
