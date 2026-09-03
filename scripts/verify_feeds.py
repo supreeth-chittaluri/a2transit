@@ -98,7 +98,7 @@ def check_gtfs_realtime(client: httpx.Client, url: str) -> list[str]:
     feed = gtfs_realtime_pb2.FeedMessage()
     try:
         feed.ParseFromString(response.content)
-    except Exception as exc:  # protobuf raises a bare DecodeError
+    except Exception as exc:  # noqa: BLE001 — protobuf raises a bare DecodeError; a verifier should report any parse failure, not crash
         return [f"payload did not parse as GTFS-Realtime: {exc}"]
 
     header_time = datetime.fromtimestamp(feed.header.timestamp, tz=UTC)
