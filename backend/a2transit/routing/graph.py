@@ -35,9 +35,15 @@ Scope
 -----
 The graph is built for a time range rather than a whole day. A full three-date
 window is ~219,000 stop_times, so materialising all of it would mean roughly
-660,000 nodes for a query that will touch a fraction of them. `horizon_seconds`
-bounds the build; anything an itinerary would need beyond it is unreachable by
-construction, so the default is deliberately generous.
+660,000 nodes for a query that will touch a fraction of them.
+
+`horizon_seconds` bounds **boardings**, not arrivals. Platform nodes exist only
+inside [start, start + horizon], so no vehicle can be boarded outside it — but a
+trip boarded inside the window keeps its whole stop sequence, including stops
+that fall beyond the horizon. Truncating mid-ride would delete a legitimate
+journey at an arbitrary boundary and report "unreachable" for a bus the rider is
+already sitting on. The consequence worth knowing: an itinerary's final arrival
+may be later than start + horizon, though every boarding within it is not.
 """
 
 from __future__ import annotations
