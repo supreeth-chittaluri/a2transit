@@ -120,7 +120,8 @@ def check_gtfs_realtime(client: httpx.Client, url: str) -> list[str]:
 def main() -> int:
     failures: list[str] = []
 
-    with httpx.Client(timeout=TIMEOUT, headers={"User-Agent": "a2transit-feed-verifier/0.1"}) as client:
+    headers = {"User-Agent": "a2transit-feed-verifier/0.1"}
+    with httpx.Client(timeout=TIMEOUT, headers=headers) as client:
         for agency in AGENCIES:
             print(f"\n{agency.label}")
             print(f"  GTFS static  {agency.gtfs_url}")
