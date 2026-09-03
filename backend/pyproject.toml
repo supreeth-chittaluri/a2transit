@@ -1,0 +1,45 @@
+[project]
+name = "a2transit"
+version = "0.1.0"
+description = "Multimodal journey planner for Ann Arbor: TheRide (AAATA) + U-M MBus in one routing graph"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "geoalchemy2>=0.15",
+    "httpx>=0.27",
+    # Google's official GTFS-Realtime protobuf classes; both agencies serve spec v2.0.
+    "gtfs-realtime-bindings>=1.0",
+    "redis>=5.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["a2transit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Feed-hitting tests are opt-in so the suite stays runnable offline.
+markers = ["network: test requires live internet access to an agency feed"]
+addopts = "-m 'not network'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
