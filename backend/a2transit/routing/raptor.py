@@ -253,6 +253,12 @@ def run_raptor(
                 candidate = pattern.earliest_run(position, board_ready)
                 if candidate is None:
                     continue
+                # The horizon bounds the *departure*, not the rider's readiness.
+                # Being ready at 09:00 does not license boarding the 19:00 bus:
+                # M2's graph has no platform node out there, so it would find
+                # nothing while RAPTOR happily returned a journey.
+                if pattern.departure_columns[position][candidate] > boarding_deadline:
+                    continue
                 if run_index is None or candidate < run_index:
                     run_index = candidate
                     run = pattern.runs[candidate]
