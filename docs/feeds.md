@@ -165,16 +165,22 @@ because that is a coincidence of the current feeds, not a guarantee.)
 
 ### 2. The cross-agency transfer premise is real
 
-**732 TheRide↔MBus stop pairs lie within 400 m** of each other, and many are
+**728 TheRide↔MBus stop pairs lie within 400 m** of each other, and many are
 effectively the same corner:
 
 ```
-  0 m   TheRide "Bonisteel + Beal"            <-> MBus "Cooley Lab Outbound"
-  1 m   TheRide "SB State + Monroe"           <-> MBus "South Quad"
-  1 m   TheRide "State + Monroe"              <-> MBus "Law Quad"
-  2 m   TheRide "Glen + Catherine"            <-> MBus "Glen/Catherine Outbound"
-  3 m   TheRide "South U + State"             <-> MBus "Michigan Union S. Univ"
+ 0.4 m  TheRide "Bonisteel + Beal"             <-> MBus "Cooley Lab Outbound"
+ 0.7 m  TheRide "State + Monroe"               <-> MBus "Law Quad"
+ 1.4 m  TheRide "SB State + Monroe"            <-> MBus "South Quad"
+ 1.7 m  TheRide "NB Observatory + N University Ct" <-> MBus "Stockwell Hall Inbound"
+ 2.3 m  TheRide "Glen + Catherine"             <-> MBus "Glen/Catherine Outbound"
 ```
+
+Measured with PostGIS `ST_DWithin` over `geography` after ingest (M1), which is
+what M4 will actually generate footpaths from. An earlier estimate said 732; that
+count used spherical haversine, and four pairs sit close enough to the 400 m
+threshold that the WGS84 spheroid moves them across it. Where the two disagree,
+the PostGIS number is the one that matters.
 
 This is what makes the merged graph worth building: neither agency's own trip
 planner will route you across these pairs. The PostGIS `ST_DWithin` footpath

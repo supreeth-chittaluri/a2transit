@@ -5,8 +5,8 @@ Door-to-door journey planning across Ann Arbor's two bus networks — **TheRide
 merged into a single routing graph, transfers between them included.
 
 Neither agency's own trip planner will route you across the other's network,
-even where their stops share a corner. [732 of their stop pairs sit within
-400 m of each other, dozens within 5 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
+even where their stops share a corner. [728 of their stop pairs sit within
+400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
 **Status:** M1 complete — both agencies ingested into PostGIS (321,700 rows).
 
@@ -184,11 +184,14 @@ GTFS-Realtime (both agencies)  ──▶  poller  ──▶  Redis  ──▶  r
 
 ### The one design constraint you cannot ignore
 
-**Stop and trip IDs collide across the two agencies, and the collisions are
-meaningless.** 90 `stop_id` values and 800 `trip_id` values appear in both
-feeds; of the 90 colliding stop IDs, exactly one pair is co-located. TheRide's
-stop `161` is "Tyler + Zephyr"; MBus's stop `161` is "TEST STOP 1", 14.9 km
-away.
+**Stop, trip, and service IDs collide across the two agencies, and the
+collisions are meaningless.** 90 `stop_id` values, 800 `trip_id` values, and all
+three of TheRide's `service_id` values appear in both feeds. Of the 90 colliding
+stop IDs, exactly one pair is co-located — TheRide's stop `161` is "Tyler +
+Zephyr", MBus's is "TEST STOP 1", 14.9 km away.
+
+The `service_id` collision is the dangerous one, because it fails quietly:
+TheRide's `3` means Mon–Fri, MBus's `3` means Monday only.
 
 So every key is composite — `(agency_source, stop_id)`, `(agency_source,
 trip_id)` — including when resolving a `trip_id` off a realtime feed. Getting
