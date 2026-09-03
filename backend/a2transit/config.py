@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     log_level: str = "INFO"
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5174"
 
     database_url: str = "postgresql+psycopg://a2transit:a2transit@localhost:5432/a2transit"
     redis_url: str = "redis://localhost:6379/0"
