@@ -8,7 +8,7 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [732 of their stop pairs sit within
 400 m of each other, dozens within 5 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M0 complete — feeds verified, scaffold in place.
+**Status:** M1 complete — both agencies ingested into PostGIS (321,700 rows).
 
 ---
 
@@ -80,13 +80,21 @@ Then: API docs at <http://localhost:8001/docs>, app at <http://localhost:5174>.
 
 ```bash
 cd backend
-./.venv/bin/pytest              # offline suite
-./.venv/bin/pytest -m network   # also hit the live agency feeds
+./.venv/bin/pytest              # 83 tests, offline
+./.venv/bin/pytest -m network   # 8 more, against the live agency feeds
 ./.venv/bin/ruff check ..
 ```
 
-Tests that reach out to the internet carry the `network` marker and are
-deselected by default, so the suite runs on a plane.
+Two markers keep the default run fast and self-contained:
+
+| Marker | Behaviour |
+|---|---|
+| `network` | Deselected by default. Hits the live feeds — run before trusting anything about the data. |
+| `db` | Runs by default, but **skips itself** when Postgres is unreachable, so the suite still passes on a plane. |
+
+`db` tests use their own `a2transit_test` database, created on demand. They
+never touch your development data — the loader's delete-and-reload would
+otherwise wipe it on every run.
 
 To re-verify every agency endpoint at once — worth doing whenever something
 looks wrong with the data:
@@ -96,6 +104,38 @@ looks wrong with the data:
 ```
 
 ---
+
+## Loading the feeds
+
+```bash
+cd backend
+./.venv/bin/python -m a2transit.ingest
+```
+
+Creates the schema on first run, then loads both agencies and prints row counts
+per table. Unchanged feeds are skipped, so this is safe to run on a schedule —
+TheRide's licence requires refreshing within three business days of a new
+publication:
+
+```bash
+0 4 * * 1  cd /path/to/a2transit/backend && .venv/bin/python -m a2transit.ingest
+```
+
+`--agency theride|mbus` for one feed, `--force` to reload regardless,
+`--from-file PATH` for a local ZIP.
+
+Current scale (2026-08-23 feeds):
+
+| | TheRide | MBus | total |
+|---|---:|---:|---:|
+| stops | 1,055 | 120 | 1,175 |
+| routes | 30 | 16 | 46 |
+| trips | 4,235 | 8,432 | 12,667 |
+| stop_times | 106,066 | 108,658 | 214,724 |
+| shape points | 73,507 | 19,102 | 92,609 |
+| **all tables** | **185,005** | **136,695** | **321,700** |
+
+Full load takes ~2.5 s.
 
 ## Data sources
 
@@ -163,9 +203,10 @@ bus.
       endpoints for both agencies; document formats and licence terms. FastAPI
       app, docker-compose (PostGIS + Redis), Vite/React skeleton.
       *Done: `docker compose up` gives a working DB; `GET /health` returns 200.*
-- [ ] **M1 — GTFS ingest.** Load both agencies into Postgres with a sane schema
-      and indexes; idempotent weekly `refresh`. *Row counts per table; spot-check
-      TheRide Route 4 by query.*
+- [x] **M1 — GTFS ingest.** Load both agencies into Postgres with a sane schema
+      and indexes; idempotent weekly `refresh`.
+      *Done: 321,700 rows across both feeds in ~2.5 s; reload is byte-identical;
+      Route 4 verified against the published schedule.*
 - [ ] **M2 — Routing v1 (correctness).** Time-dependent Dijkstra over a
       time-expanded graph. *Hand-verified itineraries for 5+ real stop pairs.*
 - [ ] **M3 — Routing v2 (RAPTOR).** Round-based, earliest-arrival and

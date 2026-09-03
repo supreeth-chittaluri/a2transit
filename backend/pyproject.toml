@@ -34,7 +34,10 @@ packages = ["a2transit"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Feed-hitting tests are opt-in so the suite stays runnable offline.
-markers = ["network: test requires live internet access to an agency feed"]
+markers = [
+    "network: test requires live internet access to an agency feed",
+    "db: test requires a running Postgres (skipped automatically when absent)",
+]
 addopts = "-m 'not network'"
 
 [tool.ruff]
