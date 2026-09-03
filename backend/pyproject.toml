@@ -47,3 +47,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI declares query parameters as call expressions in argument defaults.
+# That is the framework's documented idiom, not the mutable-default bug B008
+# exists to catch.
+"a2transit/api/*.py" = ["B008"]

@@ -29,11 +29,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
-from a2transit.routing.constants import (
-    SECONDS_PER_DAY,
-    close_transfers,
-    effective_transfer_seconds,
-)
+from a2transit.routing.constants import SECONDS_PER_DAY
 from a2transit.routing.service_calendar import AgencyCalendar, load_calendars
 
 logger = logging.getLogger(__name__)
@@ -106,14 +102,23 @@ class TripInstance:
 
 
 @dataclass(frozen=True, slots=True)
-class TransferLink:
-    """An agency-declared transfer, with the time it actually takes."""
+class Footpath:
+    """A walk between two stops, with the time it actually takes.
+
+    `seconds` already carries the transfer floor and the detour allowance — see
+    preprocess.footpaths — so an engine adds nothing to it.
+    """
 
     from_stop: StopKey
     to_stop: StopKey
     seconds: int
     declared_seconds: int | None
-    distance_metres: float | None
+    distance_metres: float
+
+    @property
+    def is_declared(self) -> bool:
+        """Whether an agency publishes this pair in transfers.txt."""
+        return self.declared_seconds is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +141,7 @@ class Timetable:
     stops: dict[StopKey, Stop]
     routes: dict[tuple[AgencySource, str], Route]
     instances: tuple[TripInstance, ...]
-    transfers: tuple[TransferLink, ...] = field(default_factory=tuple)
+    footpaths: tuple[Footpath, ...] = field(default_factory=tuple)
 
     def stop_by_id(self, agency: AgencySource, stop_id: str) -> Stop | None:
         return self.stops.get((agency, stop_id))
@@ -156,7 +161,7 @@ class Timetable:
     def __repr__(self) -> str:
         return (
             f"<Timetable {self.base_date} stops={len(self.stops)} "
-            f"instances={len(self.instances)} transfers={len(self.transfers)}>"
+            f"instances={len(self.instances)} footpaths={len(self.footpaths)}>"
         )
 
 
@@ -210,57 +215,42 @@ def load_routes(engine: Engine) -> dict[tuple[AgencySource, str], Route]:
     }
 
 
-def _load_transfers(engine: Engine) -> tuple[TransferLink, ...]:
-    """Declared transfers, with the real walking time substituted in.
+def load_footpaths(engine: Engine) -> tuple[Footpath, ...]:
+    """Every walkable stop-to-stop link, from the table preprocessing built.
 
-    transfer_type 3 means "transfer not possible" and is dropped. Self-transfers
-    (from_stop == to_stop) are dropped too: TheRide publishes several, and the
-    search already models waiting at a stop.
+    Both engines read this, which is the point: before M4 each derived its own
+    transfer set from transfers.txt and closed it transitively, and the two
+    only agreed because `constants.close_transfers` forced them to. Now they
+    read the same rows, and "what is walkable" is a fact about the data rather
+    than a convention two implementations have to keep in step.
+
+    Ordered so the loaded set does not depend on the planner's row order — the
+    engines are compared against each other case by case, and a build that
+    shuffles is a mismatch nobody can reproduce.
     """
     with engine.connect() as connection:
         rows = connection.execute(
             text(
                 """
-                SELECT t.agency_source, t.from_stop_id, t.to_stop_id,
-                       t.transfer_type, t.min_transfer_time,
-                       ST_Distance(a.geog, b.geog) AS metres
-                  FROM transfers t
-                  JOIN stops a ON a.agency_source = t.agency_source
-                              AND a.stop_id = t.from_stop_id
-                  JOIN stops b ON b.agency_source = t.agency_source
-                              AND b.stop_id = t.to_stop_id
-                 WHERE t.transfer_type <> 3
-                   AND t.from_stop_id <> t.to_stop_id
+                SELECT from_agency_source, from_stop_id,
+                       to_agency_source, to_stop_id,
+                       metres, seconds, declared_seconds
+                  FROM footpaths
+                 ORDER BY from_agency_source, from_stop_id,
+                          to_agency_source, to_stop_id
                 """
             )
         ).all()
 
-    declared: dict[StopKey, tuple[tuple[StopKey, int], ...]] = {}
-    detail: dict[tuple[StopKey, StopKey], tuple[int | None, float | None]] = {}
-    grouped: dict[StopKey, list[tuple[StopKey, int]]] = {}
-    for row in rows:
-        agency = AgencySource(row.agency_source)
-        source = (agency, row.from_stop_id)
-        target = (agency, row.to_stop_id)
-        seconds = effective_transfer_seconds(row.min_transfer_time, row.metres)
-        grouped.setdefault(source, []).append((target, seconds))
-        detail[(source, target)] = (row.min_transfer_time, row.metres)
-    declared = {stop: tuple(targets) for stop, targets in grouped.items()}
-
-    # Closed transitively so both engines agree on what is walkable — see
-    # a2transit.routing.constants.close_transfers.
-    closed = close_transfers(declared)
-
     return tuple(
-        TransferLink(
-            from_stop=source,
-            to_stop=target,
-            seconds=seconds,
-            declared_seconds=detail.get((source, target), (None, None))[0],
-            distance_metres=detail.get((source, target), (None, None))[1],
+        Footpath(
+            from_stop=(AgencySource(row.from_agency_source), row.from_stop_id),
+            to_stop=(AgencySource(row.to_agency_source), row.to_stop_id),
+            seconds=row.seconds,
+            declared_seconds=row.declared_seconds,
+            distance_metres=row.metres,
         )
-        for source, targets in sorted(closed.items())
-        for target, seconds in targets
+        for row in rows
     )
 
 
@@ -376,7 +366,7 @@ def build_timetable(
         stops=load_stops(engine),
         routes=load_routes(engine),
         instances=tuple(instances),
-        transfers=_load_transfers(engine),
+        footpaths=load_footpaths(engine),
     )
     logger.info("built %r", timetable)
     return timetable

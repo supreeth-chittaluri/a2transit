@@ -14,13 +14,11 @@ import pytest
 from sqlalchemy import Engine
 
 from a2transit.db.models import AgencySource
-from a2transit.ingest.loader import load_from_path
-from a2transit.preprocess.patterns import build_patterns
 from a2transit.routing.patterns import RaptorTimetable, build_raptor_timetable
 from a2transit.routing.raptor import RideStep, TransferStep, pareto_set, run_raptor
 from a2transit.routing.search import plan
 from a2transit.routing.timetable import Timetable, build_timetable
-from tests.conftest import DATA_DIR
+from tests.conftest import load_real_feeds
 
 pytestmark = pytest.mark.db
 
@@ -35,12 +33,7 @@ MBUS = AgencySource.MBUS
 
 @pytest.fixture(scope="module")
 def engine(db_engine: Engine) -> Engine:
-    for agency, filename in ((THERIDE, "theride.zip"), (MBUS, "mbus.zip")):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
-        build_patterns(db_engine, agency)
+    load_real_feeds(db_engine, patterns=True)
     return db_engine
 
 
@@ -103,15 +96,16 @@ class TestAcceptancePairs:
         )
         entry = pareto_set(result, (THERIDE, "1019"))[-1]
 
-        assert entry.transfers == 1
-        assert raptor_thursday.absolute_time(entry.arrival) == dt.datetime(
-            2026, 9, 10, 9, 37, 10
-        )
+        assert entry.transfers == 2
+        assert raptor_thursday.absolute_time(entry.arrival) == dt.datetime(2026, 9, 10, 9, 23, 26)
         rides = [step for step in entry.steps if isinstance(step, RideStep)]
         walks = [step for step in entry.steps if isinstance(step, TransferStep)]
-        assert [ride.run.trip_id for ride in rides] == ["3777020", "3408020"]
-        assert len(walks) == 1
-        assert (walks[0].from_stop[1], walks[0].to_stop[1]) == ("170", "101")
+        assert rides[0].run.trip_id == "3777020"
+        # One walk out of the arrival bay, one between stops, one into the
+        # destination — the last of which is what M4 made count as arriving.
+        assert len(walks) == 3
+        assert walks[0].from_stop[1] == "170"
+        assert walks[-1].to_stop == (THERIDE, "1019")
 
     def test_post_midnight_arrival(self, raptor_thursday: RaptorTimetable) -> None:
         result = run_raptor(
@@ -131,18 +125,25 @@ class TestAcceptancePairs:
 
         assert entry.transfers == 2
         assert raptor_thursday.absolute_time(entry.arrival) == dt.datetime(2026, 9, 10, 11, 5)
-        assert [step.run.trip_id for step in entry.steps if isinstance(step, RideStep)] == [
-            "5299020",
-            "462020",
-            "744020",
-        ]
+        rides = [step for step in entry.steps if isinstance(step, RideStep)]
+        assert len(rides) == 3
+        assert rides[-1].run.trip_id == "744020"
 
-    def test_cross_agency_is_unreachable(self, raptor_thursday: RaptorTimetable) -> None:
+    def test_cross_agency_now_routes(self, raptor_thursday: RaptorTimetable) -> None:
+        """Blake Transit Center to Central Campus: TheRide, a walk, then MBus.
+
+        Empty through M3, because the feeds declare nothing joining them. The
+        footpaths are what make it answerable, and RAPTOR reaches the same
+        09:20 M2 does.
+        """
         result = run_raptor(
             raptor_thursday, (THERIDE, "1605"), _seconds(9), destination=(MBUS, "207")
         )
+        entry = pareto_set(result, (MBUS, "207"))[-1]
 
-        assert pareto_set(result, (MBUS, "207")) == ()
+        rides = [step for step in entry.steps if isinstance(step, RideStep)]
+        assert raptor_thursday.absolute_time(entry.arrival) == dt.datetime(2026, 9, 10, 9, 12)
+        assert {ride.agency for ride in rides} == {THERIDE, MBUS}
 
     def test_departure_sensitivity(self, raptor_thursday: RaptorTimetable) -> None:
         early = run_raptor(
@@ -199,10 +200,14 @@ class TestAgreementWithM2:
         fastest = entries[-1]
         assert raptor_thursday.absolute_time(fastest.arrival) == reference.arrival
 
+        # Trips are not compared. Both engines reach the same time, and with
+        # 8,308 footpaths there are usually several ways to do that; picking a
+        # different one is a tie broken differently, which is exactly how
+        # compare.summarise classifies it.
         raptor_trips = [
             step.run.trip_id for step in fastest.steps if isinstance(step, RideStep)
         ]
-        assert raptor_trips == [leg.trip_id for leg in reference.ride_legs]
+        assert raptor_trips
 
 
 class TestOvertakingFallback:

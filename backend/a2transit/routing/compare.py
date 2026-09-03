@@ -24,6 +24,7 @@ from sqlalchemy import Engine, text
 from a2transit.db.models import AgencySource
 from a2transit.routing.engine import plan_with_raptor
 from a2transit.routing.patterns import RaptorTimetable, build_raptor_timetable
+from a2transit.routing.places import PlaceAttachment, with_places, with_places_raptor
 from a2transit.routing.search import plan as dijkstra_plan
 from a2transit.routing.timetable import StopKey, Timetable, build_timetable
 
@@ -152,18 +153,27 @@ def compare_cases(
     *,
     progress_every: int = 0,
     max_rounds: int = COMPARISON_MAX_ROUNDS,
+    attachment: PlaceAttachment | None = None,
 ) -> tuple[Comparison, ...]:
-    """Run every case through both engines. Timetables are built once per date."""
+    """Run every case through both engines. Timetables are built once per date.
+
+    `attachment` puts the same synthetic origin and destination into both
+    timetables, so a door-to-door query is differentially tested exactly like a
+    stop-to-stop one. That it needs no other change is the argument for
+    modelling a place as a stop rather than as an access layer per engine.
+    """
     contexts: dict[dt.date, _DateContext] = {}
     comparisons: list[Comparison] = []
 
     for position, case in enumerate(cases, start=1):
         day = case.departure.date()
         if day not in contexts:
-            contexts[day] = _DateContext(
-                raptor=build_raptor_timetable(engine, day),
-                dijkstra=build_timetable(engine, day),
-            )
+            raptor = build_raptor_timetable(engine, day)
+            dijkstra = build_timetable(engine, day)
+            if attachment is not None:
+                raptor = with_places_raptor(raptor, attachment)
+                dijkstra = with_places(dijkstra, attachment)
+            contexts[day] = _DateContext(raptor=raptor, dijkstra=dijkstra)
         context = contexts[day]
 
         outcome = plan_with_raptor(

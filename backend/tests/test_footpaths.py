@@ -25,11 +25,10 @@ from a2transit.preprocess.footpaths import build_footpaths, cross_agency_pairs
 from a2transit.routing.constants import (
     FOOTPATH_MAX_METRES,
     MIN_TRANSFER_SECONDS,
-    close_transfers,
     effective_transfer_seconds,
     walking_seconds,
 )
-from tests.conftest import DATA_DIR
+from tests.conftest import DATA_DIR, load_real_feeds
 
 pytestmark = pytest.mark.db
 
@@ -44,12 +43,7 @@ EXPECTED_DECLARED = 15
 
 @pytest.fixture(scope="module")
 def engine(db_engine: Engine) -> Engine:
-    for agency, filename in ((THERIDE, "theride.zip"), (MBUS, "mbus.zip")):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
-    build_footpaths(db_engine)
+    load_real_feeds(db_engine)
     return db_engine
 
 
@@ -179,13 +173,55 @@ class TestWalkingTime:
         assert 300 < walking_seconds(400) <= 420
 
 
-class TestTheClosureIsRetired:
-    """Why `constants.close_transfers` can be deleted.
+#: Longest chained walk the retired workaround would generate, in seconds.
+_MAX_CHAINED_TRANSFER_SECONDS = 600
 
-    It exists because TheRide declares 103->108 and 108->101 and no 103->101,
+
+def _transitive_closure(
+    links: dict[tuple, tuple[tuple[tuple, int], ...]],
+    *,
+    max_seconds: int = _MAX_CHAINED_TRANSFER_SECONDS,
+) -> dict[tuple, tuple[tuple[tuple, int], ...]]:
+    """What `routing.constants.close_transfers` did, before M4 deleted it.
+
+    Kept here rather than in the engines because it is now a specification of
+    something no longer needed, not code anything calls. Floyd-Warshall over a
+    handful of transit-centre bays, so the cubic cost is irrelevant.
+    """
+    stops = set(links)
+    for targets in links.values():
+        stops.update(target for target, _ in targets)
+
+    best: dict[tuple, dict[tuple, int]] = {
+        stop: dict(links.get(stop, ())) for stop in stops
+    }
+    for middle in stops:
+        via = best.get(middle, {})
+        for source in stops:
+            to_middle = best[source].get(middle)
+            if to_middle is None:
+                continue
+            for target, onward in via.items():
+                if target == source or to_middle + onward > max_seconds:
+                    continue
+                current = best[source].get(target)
+                if current is None or to_middle + onward < current:
+                    best[source][target] = to_middle + onward
+
+    return {
+        stop: tuple(sorted(targets.items())) for stop, targets in best.items() if targets
+    }
+
+
+class TestTheClosureIsRetired:
+    """Why `constants.close_transfers` could be deleted.
+
+    It existed because TheRide declares 103->108 and 108->101 and no 103->101,
     though the bays are ~50 m apart, and the two engines chained differently
-    without it. If the generated set already contains every edge the closure
-    produces, both engines can read footpaths directly and the workaround goes.
+    without it. Both engines now read footpaths directly, which is only sound
+    because the generated set already contains every edge the closure produced —
+    so the retired algorithm stays here, applied to the live feed, as the guard
+    on that.
     """
 
     def _closure(self, engine: Engine) -> set[tuple]:
@@ -214,7 +250,9 @@ class TestTheClosureIsRetired:
                     effective_transfer_seconds(row.min_transfer_time, row.metres),
                 )
             )
-        closed = close_transfers({stop: tuple(targets) for stop, targets in links.items()})
+        closed = _transitive_closure(
+            {stop: tuple(targets) for stop, targets in links.items()}
+        )
         return {
             (source[0], source[1], target[0], target[1])
             for source, targets in closed.items()

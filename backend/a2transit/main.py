@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from a2transit import __version__
-from a2transit.api import health
+from a2transit.api import health, places, plan, stops
 from a2transit.config import get_settings
 
 # Displayed at /docs, and the attribution TheRide's data licence requires wherever
@@ -43,6 +43,9 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(plan.router)
+    app.include_router(stops.router)
+    app.include_router(places.router)
     return app
 
 

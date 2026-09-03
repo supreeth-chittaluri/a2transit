@@ -8,10 +8,14 @@ import pytest
 from sqlalchemy import Engine
 
 from a2transit.db.models import AgencySource
-from a2transit.ingest.loader import load_from_path
 from a2transit.routing.constants import MIN_TRANSFER_SECONDS, SECONDS_PER_DAY
-from a2transit.routing.timetable import Timetable, build_timetable, service_date_window
-from tests.conftest import DATA_DIR
+from a2transit.routing.timetable import (
+    Timetable,
+    build_timetable,
+    load_footpaths,
+    service_date_window,
+)
+from tests.conftest import load_real_feeds
 
 THURSDAY = dt.date(2026, 9, 10)
 LABOR_DAY = dt.date(2026, 9, 7)
@@ -60,15 +64,7 @@ class TestAbsoluteTime:
 
 @pytest.fixture(scope="module")
 def loaded_engine(db_engine: Engine) -> Engine:
-    for agency, filename in (
-        (AgencySource.THERIDE, "theride.zip"),
-        (AgencySource.MBUS, "mbus.zip"),
-    ):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
-    return db_engine
+    return load_real_feeds(db_engine)
 
 
 @pytest.fixture(scope="module")
@@ -156,56 +152,73 @@ class TestBuildTimetable:
 
 
 @pytest.mark.db
-class TestTransfers:
+class TestFootpaths:
+    """What the timetable loads from the M4 footpath table.
+
+    The point of loading them here rather than deriving a transfer set from
+    transfers.txt is that RAPTOR reads exactly the same rows. Before M4 each
+    engine built its own set and they agreed only because a transitive closure
+    forced them to.
+    """
+
     def test_declared_transfers_get_the_floor_not_the_feed_value(
         self, thursday_timetable: Timetable
     ) -> None:
-        """Every TheRide transfer declares 10 s across bays up to 71 m apart."""
+        """Every TheRide transfer declares 10 s across bays up to 70.5 m apart."""
         declared = [
-            transfer
-            for transfer in thursday_timetable.transfers
-            if transfer.declared_seconds is not None
+            footpath for footpath in thursday_timetable.footpaths if footpath.is_declared
         ]
         assert declared
 
-        for transfer in declared:
-            assert transfer.declared_seconds == 10
-            assert transfer.seconds >= MIN_TRANSFER_SECONDS
-            assert transfer.seconds > transfer.declared_seconds
+        for footpath in declared:
+            assert footpath.declared_seconds == 10
+            assert footpath.seconds >= MIN_TRANSFER_SECONDS
+            assert footpath.seconds > footpath.declared_seconds
 
-    def test_derived_transfers_exist_and_carry_no_declared_time(
+    def test_the_edge_the_feed_omits_is_present_on_its_own_merits(
         self, thursday_timetable: Timetable
     ) -> None:
-        """The transfer graph is closed transitively, so both engines agree on
-        what is walkable. TheRide declares 103->108 and 108->101 but no
-        103->101, though the bays are about 50 m apart."""
-        derived = [
-            transfer
-            for transfer in thursday_timetable.transfers
-            if transfer.declared_seconds is None
-        ]
+        """103->101, which used to arrive by transitive closure.
 
-        assert derived
-        for transfer in derived:
-            assert transfer.seconds >= MIN_TRANSFER_SECONDS
-        assert any(
-            (transfer.from_stop[1], transfer.to_stop[1]) == ("103", "101")
-            for transfer in derived
+        TheRide declares 103->108 and 108->101 and not 103->101, though the
+        bays are about 50 m apart. It is now a generated footpath like any
+        other: a fact about where the bays are, not an inference from two hops.
+        """
+        link = next(
+            footpath
+            for footpath in thursday_timetable.footpaths
+            if (footpath.from_stop[1], footpath.to_stop[1]) == ("103", "101")
         )
 
-    def test_self_transfers_are_dropped(self, thursday_timetable: Timetable) -> None:
+        assert not link.is_declared
+        assert link.distance_metres < 100
+        assert link.seconds >= MIN_TRANSFER_SECONDS
+
+    def test_no_stop_walks_to_itself(self, thursday_timetable: Timetable) -> None:
         """The feed publishes stop->itself rows; waiting is already modelled."""
         assert all(
-            transfer.from_stop != transfer.to_stop
-            for transfer in thursday_timetable.transfers
+            footpath.from_stop != footpath.to_stop
+            for footpath in thursday_timetable.footpaths
         )
 
-    def test_transfer_endpoints_are_agency_qualified(
-        self, thursday_timetable: Timetable
-    ) -> None:
-        for transfer in thursday_timetable.transfers:
-            assert transfer.from_stop[0] is AgencySource.THERIDE
-            assert transfer.to_stop[0] is AgencySource.THERIDE
+    def test_endpoints_are_agency_qualified(self, thursday_timetable: Timetable) -> None:
+        for footpath in thursday_timetable.footpaths:
+            assert footpath.from_stop[0] in tuple(AgencySource)
+            assert footpath.to_stop[0] in tuple(AgencySource)
+
+    def test_the_two_networks_are_joined(self, thursday_timetable: Timetable) -> None:
+        """The M4 acceptance in one assertion: links whose ends differ in agency."""
+        crossing = [
+            footpath
+            for footpath in thursday_timetable.footpaths
+            if footpath.from_stop[0] is not footpath.to_stop[0]
+        ]
+
+        assert len(crossing) == 1_456
+
+    def test_the_loaded_order_is_stable(self, loaded_engine: Engine) -> None:
+        """A shuffled set is a differential mismatch nobody can reproduce."""
+        assert load_footpaths(loaded_engine) == load_footpaths(loaded_engine)
 
 
 @pytest.mark.db
