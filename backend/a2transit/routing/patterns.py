@@ -21,14 +21,21 @@ import datetime as dt
 import logging
 from bisect import bisect_left
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
 from a2transit.routing.constants import effective_transfer_seconds
 from a2transit.routing.service_calendar import AgencyCalendar, load_calendars
-from a2transit.routing.timetable import StopKey, service_date_window
+from a2transit.routing.timetable import (
+    Route,
+    Stop,
+    StopKey,
+    load_routes,
+    load_stops,
+    service_date_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +95,10 @@ class RaptorTimetable:
     stop_index: dict[StopKey, tuple[tuple[int, int], ...]]
     #: stop -> [(target stop, seconds)] for agency-declared transfers.
     transfers: dict[StopKey, tuple[tuple[StopKey, int], ...]]
+    #: Stop and route metadata, so a journey can be rendered without the M2
+    #: timetable also being loaded.
+    stops: dict[StopKey, Stop] = field(default_factory=dict)
+    routes: dict[tuple[AgencySource, str], Route] = field(default_factory=dict)
 
     def absolute_time(self, seconds: int) -> dt.datetime:
         return dt.datetime.combine(self.base_date, dt.time()) + dt.timedelta(seconds=seconds)
@@ -312,6 +323,8 @@ def build_raptor_timetable(
         patterns=tuple(patterns),
         stop_index={stop: tuple(entries) for stop, entries in stop_index.items()},
         transfers=_load_transfers(engine),
+        stops=load_stops(engine),
+        routes=load_routes(engine),
     )
     unsorted = [pattern.pattern_id for pattern in patterns if not pattern.sorted_columns]
     if unsorted:

@@ -37,6 +37,7 @@ import logging
 from dataclasses import dataclass, field
 
 from a2transit.routing.constants import MIN_TRANSFER_SECONDS
+from a2transit.routing.graph import DEFAULT_HORIZON_SECONDS
 from a2transit.routing.patterns import PatternTable, RaptorTimetable, TripRun
 from a2transit.routing.timetable import StopKey
 
@@ -147,8 +148,18 @@ def run_raptor(
     *,
     destination: StopKey | None = None,
     max_rounds: int = DEFAULT_MAX_ROUNDS,
+    horizon_seconds: int = DEFAULT_HORIZON_SECONDS,
 ) -> RaptorResult:
-    """Run the rounds. `destination` only enables pruning; labels are complete."""
+    """Run the rounds. `destination` only enables pruning; labels are complete.
+
+    `horizon_seconds` bounds boardings exactly as M2's graph does — no vehicle
+    may be boarded after departure_time + horizon, though a ride boarded inside
+    it keeps its whole stop sequence. Without this RAPTOR happily searches the
+    entire three-day window and answers a query at 10:45 with a journey that
+    boards at 18:24 and arrives the following morning: correct, useless, and
+    not what M2 would have said.
+    """
+    boarding_deadline = departure_time + horizon_seconds
     arrivals: list[dict[StopKey, int]] = [{} for _ in range(max_rounds + 1)]
     parents: list[dict[StopKey, Step]] = [{} for _ in range(max_rounds + 1)]
 
@@ -234,7 +245,7 @@ def run_raptor(
                 if not pattern.can_board[position] or position == len(pattern.stops) - 1:
                     continue
                 board_ready = previous_ready.get(stop)
-                if board_ready is None:
+                if board_ready is None or board_ready > boarding_deadline:
                     continue
                 if run is not None and board_ready > run.departures[position]:
                     continue

@@ -169,7 +169,7 @@ def service_date_window(base_date: dt.date) -> tuple[tuple[dt.date, int], ...]:
     )
 
 
-def _load_stops(engine: Engine) -> dict[StopKey, Stop]:
+def load_stops(engine: Engine) -> dict[StopKey, Stop]:
     with engine.connect() as connection:
         rows = connection.execute(
             text("SELECT agency_source, stop_id, stop_name, stop_lat, stop_lon FROM stops")
@@ -187,7 +187,7 @@ def _load_stops(engine: Engine) -> dict[StopKey, Stop]:
     }
 
 
-def _load_routes(engine: Engine) -> dict[tuple[AgencySource, str], Route]:
+def load_routes(engine: Engine) -> dict[tuple[AgencySource, str], Route]:
     with engine.connect() as connection:
         rows = connection.execute(
             text(
@@ -352,8 +352,8 @@ def build_timetable(
 
     timetable = Timetable(
         base_date=base_date,
-        stops=_load_stops(engine),
-        routes=_load_routes(engine),
+        stops=load_stops(engine),
+        routes=load_routes(engine),
         instances=tuple(instances),
         transfers=_load_transfers(engine),
     )
