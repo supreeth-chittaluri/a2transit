@@ -8,7 +8,7 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [728 of their stop pairs sit within
 400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M1 complete — both agencies ingested into PostGIS (321,700 rows).
+**Status:** M2 complete — reference routing engine planning real itineraries.
 
 ---
 
@@ -137,6 +137,73 @@ Current scale (2026-08-23 feeds):
 
 Full load takes ~2.5 s.
 
+## Planning a trip
+
+```bash
+cd backend
+./.venv/bin/python -m a2transit.routing --search "YTC"
+./.venv/bin/python -m a2transit.routing \
+    --from theride:544 --to theride:1019 --depart 2026-09-10T09:00 -v
+```
+
+```
+EB Washtenaw + Brookside -> E - First north of Frederick
+  depart Thu 2026-09-10 09:00  arrive 09:37  (37 min, 1 transfer)
+    09:00 EB Washtenaw + Brookside  --[theride 4 to Ypsilanti Transit Ctr]-->
+    09:10 YTC - EndPt
+    09:10 transfer to YTC - Stop 1 (20 min incl. wait)
+    09:30 YTC - Stop 1  --[theride 47 to Hewitt & Ellsworth]-->
+    09:37 E - First north of Frederick
+```
+
+A bare `stop_id` is rejected when both feeds use it — 90 do, as different
+places — so stops are written `agency:stop_id`.
+
+### What the engine does and does not do
+
+M2 is the **correctness reference**, not the fast path. It uses a time-expanded
+graph, where every node carries a time and every edge points forward, making the
+graph a DAG whose topological order is time order. Earliest-arrival over it needs
+no argument about FIFO or non-overtaking — which is the point, because M3's
+RAPTOR gets checked against it.
+
+| | |
+|---|---|
+| Timetable build | 560 ms per service date, amortised across queries |
+| Query p50 / p95 | **146 ms / 198 ms** over 200 random pairs |
+| Criterion | Earliest arrival only. Fewest-transfers arrives with RAPTOR in M3. |
+
+Known limitations, all deliberate:
+
+- **No cross-agency itineraries yet.** The feeds share no `stop_id`, and the only
+  inter-stop links in the data are TheRide's 17 declared transfers, all inside
+  Ypsilanti Transit Center. PostGIS footpaths in M4 are what join the two
+  networks; until then a TheRide-to-MBus query correctly returns nothing.
+- **Tight timed transfers at pulse points are rejected.** Every TheRide transfer
+  declares `min_transfer_time = 10 s` across bays up to 71 m apart — 25 km/h on
+  foot — so a 60 s floor is applied instead. TheRide does hold connecting buses
+  at Blake Transit Center, but GTFS has no way for them to say so in the data
+  they publish, so nothing distinguishes a held connection from a coincidental
+  one.
+- **Boardings are bounded by a six-hour horizon.** A ride boarded inside it may
+  finish outside it; cutting a trip off mid-ride would report "unreachable" for
+  a bus the rider is already on.
+
+### Service dates are not calendar days
+
+Two things the engine has to get right, both of which fail quietly rather than
+loudly:
+
+**GTFS times pass 24:00:00.** MBus reaches `27:15:00`. Times are stored as
+integer seconds from service midnight and normalised against a {D−1, D, D+1}
+window, so a query at 00:30 still sees the buses that belong to yesterday's
+service date.
+
+**`calendar_dates` is load-bearing, not an edge case.** MBus overlays several
+`service_id`s onto each weekday and removes most again by exception. Reading
+`calendar.txt` alone gives 3,620 trips on an ordinary Thursday instead of 1,668,
+and 3,490 on Labor Day instead of 366.
+
 ## Data sources
 
 Full detail, provenance, and licence terms: **[docs/feeds.md](docs/feeds.md)**.
@@ -210,8 +277,10 @@ bus.
       and indexes; idempotent weekly `refresh`.
       *Done: 321,700 rows across both feeds in ~2.5 s; reload is byte-identical;
       Route 4 verified against the published schedule.*
-- [ ] **M2 — Routing v1 (correctness).** Time-dependent Dijkstra over a
-      time-expanded graph. *Hand-verified itineraries for 5+ real stop pairs.*
+- [x] **M2 — Routing v1 (correctness).** Earliest-arrival Dijkstra over a
+      time-expanded graph.
+      *Done: 6 hand-verified pairs incl. a cross-midnight arrival and a holiday
+      service change; p50 146 ms / p95 198 ms over 200 random queries.*
 - [ ] **M3 — Routing v2 (RAPTOR).** Round-based, earliest-arrival and
       fewest-transfers. *Matches v1 on every M2 test; median query < 50 ms.*
 - [ ] **M4 — Walking / footpaths.** PostGIS `ST_DWithin` stop→stop links
