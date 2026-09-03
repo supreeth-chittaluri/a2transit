@@ -50,3 +50,64 @@ def effective_transfer_seconds(
     if distance_metres is not None:
         candidates.append(int(-(-distance_metres // WALKING_SPEED_MPS)))  # ceil
     return max(candidates)
+
+
+#: Longest chained declared transfer worth generating, in seconds.
+#:
+#: TheRide's transfers form a near-clique between the Ypsilanti Transit Center
+#: bays, but not a complete one — it declares 103->108 and 108->101 and no
+#: 103->101, though the two are about 50 m apart. Both engines close the
+#: transfer graph transitively so they agree on what is walkable, and this caps
+#: how far that closure will chain.
+MAX_CHAINED_TRANSFER_SECONDS = 600
+
+
+def close_transfers(
+    links: dict[tuple, tuple[tuple[tuple, int], ...]],
+    *,
+    max_seconds: int = MAX_CHAINED_TRANSFER_SECONDS,
+) -> dict[tuple, tuple[tuple[tuple, int], ...]]:
+    """Transitive closure of the declared-transfer graph, by shortest walk.
+
+    Without this the two engines disagree on reachability in a way that depends
+    on their internal structure rather than on the data. M2's wait chain lets a
+    rider walk to one bay, wait, and walk on to a third, so it finds 103->101;
+    RAPTOR relaxes transfers once per round and does not. Closing the graph up
+    front means neither engine needs chaining logic and both see the same set.
+
+    M4 replaces this entirely: PostGIS footpaths will contain 103->101 directly,
+    generated from the 50 m between them rather than inferred from two hops.
+    """
+    stops = set(links)
+    for targets in links.values():
+        stops.update(target for target, _ in targets)
+
+    best: dict[tuple, dict[tuple, int]] = {
+        stop: {target: seconds for target, seconds in links.get(stop, ())} for stop in stops
+    }
+
+    # Floyd-Warshall. The transfer graph is a handful of transit-centre bays, so
+    # the cubic cost is irrelevant and the clarity is worth more than a Dijkstra.
+    for middle in stops:
+        via = best.get(middle, {})
+        if not via:
+            continue
+        for source in stops:
+            to_middle = best[source].get(middle)
+            if to_middle is None:
+                continue
+            for target, onward in via.items():
+                if target == source:
+                    continue
+                total = to_middle + onward
+                if total > max_seconds:
+                    continue
+                current = best[source].get(target)
+                if current is None or total < current:
+                    best[source][target] = total
+
+    return {
+        stop: tuple(sorted(targets.items()))
+        for stop, targets in best.items()
+        if targets
+    }

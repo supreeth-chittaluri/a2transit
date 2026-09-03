@@ -243,13 +243,20 @@ def build_graph(
     if origin is not None:
         platform_times[origin].add(start_time)
 
-    # Declared transfers add arrival times at their far end. One hop only:
-    # TheRide's transfers form a clique between the Ypsilanti Transit Center
-    # bays, so every reachable pair is already declared directly, and chaining
-    # walks would model a rider crossing the same plaza twice.
+    # Declared transfers add arrival times at their far end. One hop only, and
+    # enforced by snapshotting the platform times first.
+    #
+    # Reading them live made chaining possible and, worse, order-dependent: if
+    # link 103->108 happened to be processed before 108->101, a rider could walk
+    # 103->108->101 even though the feed declares no 103->101 transfer, and if
+    # the order flipped they could not. That produced journeys boarding at a
+    # stop the rider had no declared way to reach, whose legs did not chain back
+    # to the origin. M4 replaces all of this with PostGIS footpaths, where
+    # 103->101 will exist directly and honestly.
+    base_platform_times = {stop: frozenset(times) for stop, times in platform_times.items()}
     walk_targets: list[tuple[StopKey, int, StopKey, int]] = []
     for link in timetable.transfers:
-        for time in tuple(platform_times.get(link.from_stop, ())):
+        for time in base_platform_times.get(link.from_stop, ()):
             landed = time + link.seconds
             if start_time <= landed <= end_time:
                 platform_times[link.to_stop].add(landed)

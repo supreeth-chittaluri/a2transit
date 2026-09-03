@@ -161,12 +161,37 @@ class TestTransfers:
         self, thursday_timetable: Timetable
     ) -> None:
         """Every TheRide transfer declares 10 s across bays up to 71 m apart."""
-        assert thursday_timetable.transfers
+        declared = [
+            transfer
+            for transfer in thursday_timetable.transfers
+            if transfer.declared_seconds is not None
+        ]
+        assert declared
 
-        for transfer in thursday_timetable.transfers:
+        for transfer in declared:
             assert transfer.declared_seconds == 10
             assert transfer.seconds >= MIN_TRANSFER_SECONDS
             assert transfer.seconds > transfer.declared_seconds
+
+    def test_derived_transfers_exist_and_carry_no_declared_time(
+        self, thursday_timetable: Timetable
+    ) -> None:
+        """The transfer graph is closed transitively, so both engines agree on
+        what is walkable. TheRide declares 103->108 and 108->101 but no
+        103->101, though the bays are about 50 m apart."""
+        derived = [
+            transfer
+            for transfer in thursday_timetable.transfers
+            if transfer.declared_seconds is None
+        ]
+
+        assert derived
+        for transfer in derived:
+            assert transfer.seconds >= MIN_TRANSFER_SECONDS
+        assert any(
+            (transfer.from_stop[1], transfer.to_stop[1]) == ("103", "101")
+            for transfer in derived
+        )
 
     def test_self_transfers_are_dropped(self, thursday_timetable: Timetable) -> None:
         """The feed publishes stop->itself rows; waiting is already modelled."""

@@ -8,7 +8,7 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [728 of their stop pairs sit within
 400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M2 complete — reference routing engine planning real itineraries.
+**Status:** M3 complete — RAPTOR planning in ~1 ms, verified against two independent oracles.
 
 ---
 
@@ -159,19 +159,50 @@ EB Washtenaw + Brookside -> E - First north of Frederick
 A bare `stop_id` is rejected when both feeds use it — 90 do, as different
 places — so stops are written `agency:stop_id`.
 
-### What the engine does and does not do
+### Two engines
 
-M2 is the **correctness reference**, not the fast path. It uses a time-expanded
-graph, where every node carries a time and every edge points forward, making the
-graph a DAG whose topological order is time order. Earliest-arrival over it needs
-no argument about FIFO or non-overtaking — which is the point, because M3's
-RAPTOR gets checked against it.
+**RAPTOR** (M3) is the one you use. **Dijkstra over a time-expanded graph** (M2)
+is kept as the correctness reference: every node carries a time and every edge
+points forward, making the graph a DAG whose topological order is time order, so
+earliest-arrival needs no argument about FIFO or non-overtaking. That is exactly
+what makes it a trustworthy oracle rather than a second opinion.
 
-| | |
-|---|---|
-| Timetable build | 560 ms per service date, amortised across queries |
-| Query p50 / p95 | **146 ms / 198 ms** over 200 random pairs |
-| Criterion | Earliest arrival only. Fewest-transfers arrives with RAPTOR in M3. |
+| | RAPTOR | Dijkstra |
+|---|---:|---:|
+| p50, routable queries | **1.4 ms** | 114 ms |
+| p95, routable queries | **2.2 ms** | 167 ms |
+| Timetable build | 330 ms | 560 ms |
+| Criteria | earliest arrival **and** fewest transfers | earliest arrival |
+
+RAPTOR is roughly **80x faster** on queries that return a journey, against an
+acceptance target of 50 ms. The network is small — 42 GTFS routes become 117
+patterns over 2,498 pattern-stops — so a round is ~2,500 stop visits, where the
+Dijkstra searches a 116,000-node graph.
+
+Pick an engine with `--algorithm raptor|dijkstra`, or run both with `--compare`.
+
+### How the second criterion is verified
+
+Fewest-transfers has no oracle in M2, which answers earliest arrival only, so it
+rests on three independent legs rather than on differential testing alone:
+
+1. **A bounded-transfers oracle** (`routing/bounded.py`) extends the M2 search
+   with a vehicle budget — labels become `(node, boardings)` over the same DAG.
+   Slow, and reaching the answer by constrained shortest path rather than by
+   rounds, so agreement is evidence. It checks *every* entry of the Pareto set,
+   not just the fastest.
+2. **Hand-verified pairs where the criteria disagree**, read out of `stop_times`
+   first. MBus 218 to 247 at 08:45 offers 1 transfer arriving 09:43:55 or 2
+   transfers arriving 09:38:59.
+3. **Invariants on every query** — arrivals strictly decrease as transfers
+   increase, leg count matches the declared transfer count, no entry is
+   dominated, legs chain, every transfer clears the floor.
+
+Differential testing against M2 is seeded (`compare.SEED = 20260910`), so case N
+is the same case on every run and a failure prints the command that replays it.
+500 cases across a weekday, Labor Day and a Saturday: **0 arrival mismatches**.
+54 cases pick different trips with identical arrival times, which is a tie broken
+differently and not a disagreement.
 
 Known limitations, all deliberate:
 
@@ -281,8 +312,10 @@ bus.
       time-expanded graph.
       *Done: 6 hand-verified pairs incl. a cross-midnight arrival and a holiday
       service change; p50 146 ms / p95 198 ms over 200 random queries.*
-- [ ] **M3 — Routing v2 (RAPTOR).** Round-based, earliest-arrival and
-      fewest-transfers. *Matches v1 on every M2 test; median query < 50 ms.*
+- [x] **M3 — Routing v2 (RAPTOR).** Round-based, earliest-arrival and
+      fewest-transfers.
+      *Done: 0 mismatches over 500 seeded differential cases; p50 1.4 ms on
+      routable queries against Dijkstra's 114 ms.*
 - [ ] **M4 — Walking / footpaths.** PostGIS `ST_DWithin` stop→stop links
       (~400 m, cross-agency included); connect arbitrary lat/lon to nearby
       stops. *Door-to-door plan between two street addresses.*

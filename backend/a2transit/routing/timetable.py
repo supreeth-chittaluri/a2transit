@@ -29,7 +29,11 @@ from dataclasses import dataclass, field
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
-from a2transit.routing.constants import SECONDS_PER_DAY, effective_transfer_seconds
+from a2transit.routing.constants import (
+    SECONDS_PER_DAY,
+    close_transfers,
+    effective_transfer_seconds,
+)
 from a2transit.routing.service_calendar import AgencyCalendar, load_calendars
 
 logger = logging.getLogger(__name__)
@@ -231,15 +235,32 @@ def _load_transfers(engine: Engine) -> tuple[TransferLink, ...]:
             )
         ).all()
 
+    declared: dict[StopKey, tuple[tuple[StopKey, int], ...]] = {}
+    detail: dict[tuple[StopKey, StopKey], tuple[int | None, float | None]] = {}
+    grouped: dict[StopKey, list[tuple[StopKey, int]]] = {}
+    for row in rows:
+        agency = AgencySource(row.agency_source)
+        source = (agency, row.from_stop_id)
+        target = (agency, row.to_stop_id)
+        seconds = effective_transfer_seconds(row.min_transfer_time, row.metres)
+        grouped.setdefault(source, []).append((target, seconds))
+        detail[(source, target)] = (row.min_transfer_time, row.metres)
+    declared = {stop: tuple(targets) for stop, targets in grouped.items()}
+
+    # Closed transitively so both engines agree on what is walkable — see
+    # a2transit.routing.constants.close_transfers.
+    closed = close_transfers(declared)
+
     return tuple(
         TransferLink(
-            from_stop=(AgencySource(row.agency_source), row.from_stop_id),
-            to_stop=(AgencySource(row.agency_source), row.to_stop_id),
-            seconds=effective_transfer_seconds(row.min_transfer_time, row.metres),
-            declared_seconds=row.min_transfer_time,
-            distance_metres=row.metres,
+            from_stop=source,
+            to_stop=target,
+            seconds=seconds,
+            declared_seconds=detail.get((source, target), (None, None))[0],
+            distance_metres=detail.get((source, target), (None, None))[1],
         )
-        for row in rows
+        for source, targets in sorted(closed.items())
+        for target, seconds in targets
     )
 
 

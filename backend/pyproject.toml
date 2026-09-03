@@ -37,8 +37,9 @@ testpaths = ["tests"]
 markers = [
     "network: test requires live internet access to an agency feed",
     "db: test requires a running Postgres (skipped automatically when absent)",
+    "slow: long-running test, deselected by default (run with `pytest -m slow`)",
 ]
-addopts = "-m 'not network'"
+addopts = "-m 'not network and not slow'"
 
 [tool.ruff]
 line-length = 100

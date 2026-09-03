@@ -335,6 +335,11 @@ class TestKnownLimitations:
 
         assert declared == [10]
         for transfer in thursday.transfers:
+            if transfer.declared_seconds is None:
+                # Derived by transitive closure, so it has no feed value to
+                # compare against; it only has to clear the floor.
+                assert transfer.seconds >= 60
+                continue
             assert transfer.seconds == 60
             assert transfer.declared_seconds == 10
 

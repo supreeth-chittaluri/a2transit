@@ -137,6 +137,12 @@ def _reconstruct(result: RaptorResult, destination: StopKey, rounds: int) -> tup
             round_index -= 1
         else:
             stop = step.from_stop
+
+    # Round 0 holds only the walk away from the origin, if the journey used one.
+    source_step = result.parents[0].get(stop)
+    if source_step is not None:
+        steps.append(source_step)
+
     steps.reverse()
     return tuple(steps)
 
@@ -183,6 +189,31 @@ def run_raptor(
     arrivals[0][origin] = departure_time
     ready[0][origin] = departure_time
     marked: set[StopKey] = {origin}
+
+    # Transfers *from the origin*, relaxed before round 1.
+    #
+    # Without this a rider starting at one Ypsilanti Transit Center bay cannot
+    # walk to the next one and board there, because the in-round transfer pass
+    # only relaxes stops that a vehicle arrived at. The origin never has a
+    # vehicle arrival, so its declared transfers were silently unusable — one
+    # case in 500 came back an hour late with three extra rides.
+    #
+    # No transfer floor is charged here: the rider is already standing at the
+    # origin rather than alighting from something, which is how M2's graph
+    # models it too.
+    for target, seconds in timetable.transfers.get(origin, ()):
+        landed = departure_time + seconds
+        if landed < best_ready.get(target, INFINITY):
+            best_ready[target] = landed
+            ready[0][target] = landed
+            parents[0][target] = TransferStep(
+                from_stop=origin,
+                to_stop=target,
+                depart=departure_time,
+                arrive=landed,
+                seconds=seconds,
+            )
+            marked.add(target)
     patterns_scanned = 0
     rounds_run = 0
 

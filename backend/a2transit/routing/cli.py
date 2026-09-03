@@ -22,7 +22,10 @@ from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
 from a2transit.db.session import get_engine
+from a2transit.routing.compare import Case, compare_cases
+from a2transit.routing.engine import plan_with_raptor
 from a2transit.routing.graph import DEFAULT_HORIZON_SECONDS
+from a2transit.routing.patterns import build_raptor_timetable
 from a2transit.routing.search import PlanningError, plan
 from a2transit.routing.timetable import StopKey, build_timetable
 
@@ -109,12 +112,95 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="HOURS",
         help=f"How far ahead to look (default: {DEFAULT_HORIZON_SECONDS // 3600}).",
     )
+    parser.add_argument(
+        "--algorithm",
+        choices=("raptor", "dijkstra"),
+        default="raptor",
+        help="Which engine to plan with (default: raptor).",
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Run both engines and report whether they agree. Prints the "
+        "reproduction command differential test failures quote.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show search statistics.")
 
     args = parser.parse_args(argv)
     if not args.search and not (args.origin and args.destination):
         parser.error("give --search, or both --from and --to")
     return args
+
+
+def _plan_with_raptor(
+    engine: Engine,
+    origin: StopKey,
+    destination: StopKey,
+    departure: dt.datetime,
+    *,
+    verbose: bool,
+) -> int:
+    """RAPTOR returns every non-dominated option, so print the whole set."""
+    build_started = time.perf_counter()
+    timetable = build_raptor_timetable(engine, departure.date())
+    build_seconds = time.perf_counter() - build_started
+
+    outcome = plan_with_raptor(timetable, origin, destination, departure)
+
+    if not outcome.itineraries:
+        print(
+            f"No itinerary from {timetable.stops[origin].name} to "
+            f"{timetable.stops[destination].name} departing {departure:%a %Y-%m-%d %H:%M}."
+        )
+        return 1
+
+    for index, itinerary in enumerate(outcome.itineraries):
+        if index:
+            print()
+        print(itinerary.describe())
+
+    if len(outcome.itineraries) > 1:
+        print()
+        print(
+            f"  {len(outcome.itineraries)} options: fewest transfers arrives "
+            f"{outcome.fewest_transfers.arrival:%H:%M}, fastest arrives "
+            f"{outcome.fastest.arrival:%H:%M}"
+        )
+    if verbose:
+        print()
+        print(f"  timetable built in {build_seconds * 1000:.0f} ms")
+        print(f"  query answered in  {outcome.seconds * 1000:.2f} ms")
+    return 0
+
+
+def _compare(
+    engine: Engine,
+    origin: StopKey,
+    destination: StopKey,
+    departure: dt.datetime,
+) -> int:
+    """Run both engines on one query and say whether they agree."""
+    case = Case(0, origin, destination, departure)
+    comparison = compare_cases(engine, (case,))[0]
+
+    print(comparison.describe())
+    print()
+    if comparison.arrivals_agree:
+        speedup = (
+            comparison.dijkstra_seconds / comparison.raptor_seconds
+            if comparison.raptor_seconds
+            else 0
+        )
+        print(
+            f"  AGREE — RAPTOR {comparison.raptor_seconds * 1000:.2f} ms, "
+            f"Dijkstra {comparison.dijkstra_seconds * 1000:.1f} ms ({speedup:.0f}x)"
+        )
+        if not comparison.trips_agree:
+            print("  (different trips, same arrival — a tie broken differently)")
+        return 0
+
+    print("  DISAGREE on arrival time")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,6 +225,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         print("hint: find a stop with --search", file=sys.stderr)
         return 2
+
+    if args.compare:
+        return _compare(engine, origin, destination, departure)
+
+    if args.algorithm == "raptor":
+        return _plan_with_raptor(engine, origin, destination, departure, verbose=args.verbose)
 
     build_started = time.perf_counter()
     timetable = build_timetable(engine, departure.date())

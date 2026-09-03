@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
-from a2transit.routing.constants import effective_transfer_seconds
+from a2transit.routing.constants import close_transfers, effective_transfer_seconds
 from a2transit.routing.service_calendar import AgencyCalendar, load_calendars
 from a2transit.routing.timetable import (
     Route,
@@ -236,7 +236,7 @@ def _load_transfers(engine: Engine) -> dict[StopKey, tuple[tuple[StopKey, int], 
                 effective_transfer_seconds(row.min_transfer_time, row.metres),
             )
         )
-    return {stop: tuple(targets) for stop, targets in links.items()}
+    return close_transfers({stop: tuple(targets) for stop, targets in links.items()})
 
 
 def _columns_are_sorted(columns: tuple[tuple[int, ...], ...]) -> bool:
