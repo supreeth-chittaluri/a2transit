@@ -20,6 +20,7 @@ from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
 from a2transit.ingest.loader import load_from_path
+from a2transit.routing.constants import walking_seconds
 from a2transit.routing.models import RideLeg, TransferLeg
 from a2transit.routing.search import plan
 from a2transit.routing.timetable import Timetable, build_timetable
@@ -316,14 +317,19 @@ class TestKnownLimitations:
     def test_tight_timed_transfers_at_pulse_points_are_rejected(
         self, engine: Engine, thursday: Timetable
     ) -> None:
-        """Documented M2 limitation, asserted so it cannot regress silently.
+        """Documented limitation, asserted so it cannot regress silently.
 
         TheRide's declared transfers all claim min_transfer_time = 10 s across
-        bays up to 71 m apart — 25 km/h on foot. The 60 s floor overrides that,
-        which means a genuine held connection tighter than 60 s is rejected.
-        GTFS offers no way for the agency to mark a guaranteed timed transfer
-        that both feeds actually use, so there is nothing in the data to tell a
-        held connection from a coincidental one.
+        bays up to 70.5 m apart — 25 km/h on foot. The floor and the walking
+        time override that, which means a genuine held connection tighter than
+        60 s is rejected. GTFS offers no way for the agency to mark a guaranteed
+        timed transfer that both feeds actually use, so there is nothing in the
+        data to tell a held connection from a coincidental one.
+
+        The bound each transfer lands on is whichever of the two is larger. The
+        60 s floor covers everything under 60 m; the longest bay-to-bay walk at
+        Ypsilanti Transit Center is 70.5 m, so that one costs 71 s on its
+        walking time alone.
         """
         with engine.connect() as connection:
             declared = connection.execute(
@@ -335,13 +341,15 @@ class TestKnownLimitations:
 
         assert declared == [10]
         for transfer in thursday.transfers:
+            assert transfer.seconds >= 60
             if transfer.declared_seconds is None:
                 # Derived by transitive closure, so it has no feed value to
                 # compare against; it only has to clear the floor.
-                assert transfer.seconds >= 60
                 continue
-            assert transfer.seconds == 60
             assert transfer.declared_seconds == 10
+            assert transfer.seconds == max(
+                60, walking_seconds(transfer.distance_metres)
+            )
 
 
 @pytest.fixture(scope="module")

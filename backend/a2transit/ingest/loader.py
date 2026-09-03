@@ -31,7 +31,11 @@ from typing import IO
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
-from a2transit.db.models import TABLES_IN_DEPENDENCY_ORDER, AgencySource
+from a2transit.db.models import (
+    TABLES_IN_DEPENDENCY_ORDER,
+    AgencySource,
+    agency_row_predicate,
+)
 from a2transit.ingest.feeds import DownloadedFeed
 from a2transit.ingest.fields import GtfsFieldError, parse_gtfs_date, parse_text
 from a2transit.ingest.tables import TABLE_SPECS, TableSpec
@@ -175,7 +179,7 @@ def _derive_geometries(connection: Connection, agency_source: AgencySource) -> i
 def _delete_agency(connection: Connection, agency_source: AgencySource) -> None:
     for table in _DELETE_ORDER:
         connection.execute(
-            text(f"DELETE FROM {table} WHERE agency_source = :source"),
+            text(f"DELETE FROM {table} WHERE {agency_row_predicate(table)}"),
             {"source": agency_source.value},
         )
 

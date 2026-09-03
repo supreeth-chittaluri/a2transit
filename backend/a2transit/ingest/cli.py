@@ -30,8 +30,10 @@ from a2transit.db.schema import create_all
 from a2transit.db.session import get_engine
 from a2transit.ingest.feeds import download_feed, feed_spec_for, feed_specs, local_feed
 from a2transit.ingest.loader import FeedFormatError, LoadResult, load_feed
+from a2transit.preprocess.cli import print_footpath_summary
 from a2transit.preprocess.cli import print_summary as print_pattern_summary
 from a2transit.preprocess.cli import run as preprocess_run
+from a2transit.preprocess.footpaths import build_footpaths
 
 logger = logging.getLogger("a2transit.ingest")
 
@@ -187,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_preprocess and any(not result.skipped for result in results):
         rebuilt = preprocess_run(engine, tuple(result.agency_source for result in results))
         print_pattern_summary(rebuilt)
+        # Footpaths are rebuilt whole even when one agency was loaded: a link's
+        # two ends can belong to different feeds, so there is no such thing as
+        # one agency's half of the table.
+        print_footpath_summary(build_footpaths(engine))
 
     return 0
 

@@ -1,12 +1,17 @@
-"""Rebuild the RAPTOR pattern tables.
+"""Rebuild the derived routing tables: RAPTOR patterns and PostGIS footpaths.
 
     python -m a2transit.preprocess
     python -m a2transit.preprocess --agency theride
+    python -m a2transit.preprocess --footpaths-only
 
 Runs automatically at the end of a successful ingest, so this is for rebuilding
-patterns on their own — after changing the pattern logic, say. The tables are a
-pure function of the GTFS tables, so running it twice is a no-op beyond the
-work.
+on its own — after changing the pattern logic or the walking-speed constants,
+say. Both outputs are a pure function of the GTFS tables, so running it twice is
+a no-op beyond the work.
+
+Patterns are per-agency; footpaths are not, and cannot be. A footpath row names
+a stop in each agency, so rebuilding "just TheRide's" would have to decide what
+to do with the 1,456 links whose other end is MBus. It rebuilds whole, always.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from sqlalchemy import Engine
 
 from a2transit.db.models import AgencySource
 from a2transit.db.session import get_engine
+from a2transit.preprocess.footpaths import FootpathBuildResult, build_footpaths
 from a2transit.preprocess.patterns import PatternBuildResult, build_patterns
 
 logger = logging.getLogger("a2transit.preprocess")
@@ -26,6 +32,24 @@ logger = logging.getLogger("a2transit.preprocess")
 
 def run(engine: Engine, agencies: tuple[AgencySource, ...]) -> list[PatternBuildResult]:
     return [build_patterns(engine, agency) for agency in agencies]
+
+
+def print_footpath_summary(result: FootpathBuildResult) -> None:
+    print()
+    print(
+        f"footpaths    {result.total:,} links "
+        f"({result.within_agency:,} within an agency, "
+        f"{result.cross_agency:,} across), "
+        f"longest {result.max_metres:.0f} m, {result.seconds:.1f}s"
+    )
+    print(
+        f"             {result.declared:,} also declared by an agency"
+        + (
+            f", {result.beyond_radius:,} kept only because it is declared"
+            if result.beyond_radius
+            else ""
+        )
+    )
 
 
 def print_summary(results: list[PatternBuildResult]) -> None:
@@ -75,6 +99,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=[source.value for source in AgencySource],
         help="Rebuild only this agency. Default: both.",
     )
+    parser.add_argument(
+        "--footpaths-only",
+        action="store_true",
+        help="Rebuild footpaths without touching the pattern tables.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -91,14 +120,16 @@ def main(argv: list[str] | None = None) -> int:
         (AgencySource(args.agency),) if args.agency else tuple(AgencySource)
     )
 
+    engine = get_engine()
     try:
-        results = run(get_engine(), agencies)
+        if not args.footpaths_only:
+            print_summary(run(engine, agencies))
+        print_footpath_summary(build_footpaths(engine))
     except Exception:
-        logger.exception("pattern build failed")
+        logger.exception("preprocessing failed")
         logger.error("has the feed been ingested? run `python -m a2transit.ingest` first")
         return 1
 
-    print_summary(results)
     return 0
 
 
