@@ -31,25 +31,21 @@ from typing import IO
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
-from a2transit.db.models import AgencySource
+from a2transit.db.models import TABLES_IN_DEPENDENCY_ORDER, AgencySource
 from a2transit.ingest.feeds import DownloadedFeed
 from a2transit.ingest.fields import GtfsFieldError, parse_gtfs_date, parse_text
 from a2transit.ingest.tables import TABLE_SPECS, TableSpec
 
 logger = logging.getLogger(__name__)
 
-#: Reverse of TABLE_SPECS — children before parents, so deletes satisfy FKs.
-_DELETE_ORDER: tuple[str, ...] = (
-    "stop_times",
-    "transfers",
-    "trips",
-    "shape_geometries",
-    "shapes",
-    "calendar_dates",
-    "calendar",
-    "routes",
-    "stops",
-    "agencies",
+#: Children before parents, so deletes satisfy foreign keys.
+#
+# Derived from the models rather than written out again. It was written out
+# again once, and adding the RAPTOR pattern tables — which carry foreign keys
+# to trips and stops — left this list stale, so the next reload failed on a
+# foreign key violation. One list, one place to update.
+_DELETE_ORDER: tuple[str, ...] = tuple(
+    model.__tablename__ for model in TABLES_IN_DEPENDENCY_ORDER
 )
 
 

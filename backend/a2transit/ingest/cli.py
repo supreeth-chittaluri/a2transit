@@ -30,6 +30,8 @@ from a2transit.db.schema import create_all
 from a2transit.db.session import get_engine
 from a2transit.ingest.feeds import download_feed, feed_spec_for, feed_specs, local_feed
 from a2transit.ingest.loader import FeedFormatError, LoadResult, load_feed
+from a2transit.preprocess.cli import print_summary as print_pattern_summary
+from a2transit.preprocess.cli import run as preprocess_run
 
 logger = logging.getLogger("a2transit.ingest")
 
@@ -63,6 +65,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_CACHE_DIR,
         help=f"Where downloaded feeds are cached (default: {DEFAULT_CACHE_DIR}).",
+    )
+    parser.add_argument(
+        "--no-preprocess",
+        action="store_true",
+        help="Skip rebuilding RAPTOR patterns after loading.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Log every table load.")
 
@@ -172,6 +179,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
     _print_summary(results)
+
+    # Patterns are derived from the GTFS tables, so a load that changed those
+    # tables leaves them stale. Rebuilding here rather than as a separate step
+    # people have to remember means the database is never briefly inconsistent
+    # in a way the router would silently use.
+    if not args.no_preprocess and any(not result.skipped for result in results):
+        rebuilt = preprocess_run(engine, tuple(result.agency_source for result in results))
+        print_pattern_summary(rebuilt)
+
     return 0
 
 
