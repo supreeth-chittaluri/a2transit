@@ -1,0 +1,21 @@
+# Repo-root lint config.
+#
+# backend/pyproject.toml configures the package, but `scripts/` sits outside it
+# and was silently being linted against ruff's defaults instead — a different
+# rule set from the one the rest of the project is held to. One config at the
+# root means `ruff check .` means the same thing everywhere.
+
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[lint.per-file-ignores]
+# FastAPI declares query parameters as call expressions in argument defaults.
+# That is the framework's documented idiom, not the mutable-default bug B008
+# exists to catch.
+"backend/a2transit/api/*.py" = ["B008"]
+# Operational scripts add backend/ to sys.path before importing from it, which
+# necessarily puts imports after a statement.
+"scripts/*.py" = ["E402"]

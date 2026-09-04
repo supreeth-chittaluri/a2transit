@@ -8,8 +8,9 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [728 of their stop pairs sit within
 400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M8 complete — deploy-ready. Door-to-door planning against live
-vehicle positions and predictions, with shareable trip links. Blake Transit Center to Central Campus is twelve minutes:
+**Status:** all nine milestones complete. Door-to-door planning across both
+agencies against live vehicle positions, in ~3 ms, verified against two
+independent oracles and deployable to four free tiers. Blake Transit Center to Central Campus is twelve minutes:
 TheRide route 4, a three-minute walk, then MBus CS. Neither agency's planner
 will tell you that.
 
@@ -287,14 +288,15 @@ what makes it a trustworthy oracle rather than a second opinion.
 
 | | RAPTOR | Dijkstra |
 |---|---:|---:|
-| p50 | **2.6 ms** | 68 ms |
-| p95 | **5.6 ms** | 275 ms |
-| Timetable build | 340 ms | 520 ms |
+| p50 | **3.1 ms** | 60 ms |
+| p95 | **7.5 ms** | 239 ms |
+| Timetable build | 315 ms | 518 ms |
 | Criteria | earliest arrival **and** fewest transfers | earliest arrival |
 
-RAPTOR is roughly **26x faster** at p50 and 50x at p95, against an acceptance
-target of 50 ms. Both engines got slower when M4 added 8,308 footpaths, which
-is the cost of the two networks being one; RAPTOR went from 1.4 ms to 2.6 ms.
+RAPTOR is roughly **19x faster** at p50 and 32x at p95, against an acceptance
+target of 50 ms. Both engines got slower when M4 added 8,308 footpaths, which is
+the cost of the two networks being one; RAPTOR went from 1.4 ms to 3.1 ms. Full
+figures, and the command that produces them, under [Measurements](#measurements).
 
 The network is small — 42 GTFS routes become 117 patterns over 2,498
 pattern-stops — so a round is ~2,500 stop visits, where the Dijkstra searches a
@@ -502,8 +504,57 @@ bus.
       filtered service alerts, keyboard-navigable search, error and empty
       states, and a container plus manifests for all four tiers on free plans.
       *Deploy-ready; the public URL needs accounts I do not have — see below.*
-- [ ] **M9 — Measure.** Feed scale, query latency p50/p95, correctness
-      spot-checks, realtime end-to-end lag — recorded here.
+- [x] **M9 — Measure.** Feed scale, query latency p50/p95, correctness
+      spot-checks, realtime end-to-end lag. *Done: `scripts/measure.py` produces
+      every figure below in one run, so they can be re-checked rather than
+      remembered.*
+
+## Measurements
+
+Everything below comes from one command, so the numbers can be re-checked after
+a feed refresh rather than trusted because they are written down:
+
+```bash
+./backend/.venv/bin/python scripts/measure.py --cases 200 --realtime
+```
+
+Measured 2026-09-03 against the 2026-08-23 feeds, on an M-series laptop.
+
+**Scale.** 345,160 rows: 214,724 stop_times, 92,609 shape points, 12,667 trips,
+117 route patterns over 2,498 pattern-stops, and 8,308 footpaths of which 1,456
+cross between the agencies.
+
+**Build cost.** RAPTOR timetable 315 ms; Dijkstra timetable 518 ms; the
+time-expanded graph 185 ms for 113,213 nodes and 393,618 edges.
+
+**Query latency**, 200 seeded cases across a weekday, Labor Day and a Saturday:
+
+| | p50 | p95 |
+|---|---:|---:|
+| RAPTOR | **3.1 ms** | **7.5 ms** |
+| Dijkstra reference | 59.6 ms | 238.6 ms |
+
+19× at p50, 32× at p95, against an acceptance target of 50 ms. Door-to-door
+between two addresses is 5.6 ms p50 for the query plus 3.3 ms to attach the two
+places, which is one PostGIS round trip.
+
+**Correctness.** 0 arrival mismatches over 500 differential cases. 49 of 200
+cases pick different trips at an identical arrival time, which is a tie broken
+differently and not a disagreement. The four spot-checks the script runs — a
+direct trip, a cross-agency trip, a three-option trade-off, and a post-midnight
+arrival — all land on their hand-verified answers.
+
+**Realtime.** Feeds are 14–32 s old when fetched, which is the agencies'
+publication lag and not something a consumer can improve. Applying 239 live
+predictions to the timetable takes 12 ms and moves 226 runs across 48 patterns;
+worst delay observed in that sample was 23 minutes. Stored snapshots were
+33–45 s old against a 120 s expiry, so the schedule fallback had ~75 s of
+headroom.
+
+The honest summary of where the time goes: a query is ~3 ms, and everything
+around it — building a timetable, attaching a place, folding in realtime — is
+between 3 ms and 500 ms. Which is why the timetables are cached per service date
+and the realtime overlay is cached per poll.
 
 ## Repository layout
 
