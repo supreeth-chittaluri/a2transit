@@ -44,17 +44,22 @@ services:
       - key: CORS_ORIGINS
         sync: false
 
-  - type: web
-    name: a2transit-web
-    runtime: static
-    buildCommand: npm --prefix frontend ci && npm --prefix frontend run build
-    staticPublishPath: ./frontend/dist
-    envVars:
-      - key: VITE_API_BASE_URL
-        sync: false
-    routes:
-      # A single-page app: every path has to reach index.html or a shared trip
-      # link 404s on reload, which is the one URL people actually paste.
-      - type: rewrite
-        source: /*
-        destination: /index.html
+# The frontend is not here on purpose. It is a static bundle and goes to Vercel,
+# which serves it from a CDN rather than from one machine in Ohio, and a
+# Blueprint applies every service in this file — so declaring it here too would
+# quietly stand up a second, slower copy of the same site.
+#
+# To keep everything on Render instead, add back:
+#
+#   - type: web
+#     name: a2transit-web
+#     runtime: static
+#     buildCommand: npm --prefix frontend ci && npm --prefix frontend run build
+#     staticPublishPath: ./frontend/dist
+#     envVars:
+#       - key: VITE_API_BASE_URL
+#         sync: false
+#     routes:
+#       - type: rewrite          # a shared trip link must not 404 on reload
+#         source: /*
+#         destination: /index.html
