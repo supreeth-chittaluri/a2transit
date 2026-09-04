@@ -268,7 +268,11 @@ export default function App() {
                 try a different departure.
               </p>
             )}
-            {plan.state === "done" && plan.response.realtime.applied && (
+            {/* Only when live data actually changed something. A query for a
+                future date legitimately has predictions applied and nothing
+                adjusted, and "Live: 0 trips adjusted" is a claim about the
+                plumbing rather than about the rider's trip. */}
+            {plan.state === "done" && plan.response.realtime.runsAdjusted > 0 && (
               <p className="realtime-note">
                 Live: {plan.response.realtime.runsAdjusted} trips adjusted, worst
                 delay {Math.round(plan.response.realtime.maxDelaySeconds / 60)} min.

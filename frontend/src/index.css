@@ -94,6 +94,17 @@ body {
   font-size: 0.7rem;
 }
 
+/* On a phone the header has room for the name and the live count, and for
+   nothing else. Wrapping the tagline onto three lines to keep a version number
+   visible is the wrong trade. */
+@media (max-width: 560px) {
+  .header__tagline,
+  .status__version {
+    display: none;
+  }
+  .header { padding: 0.6rem 0.75rem; }
+}
+
 /* Map above the panel on narrow screens rather than a squeezed two-up. */
 @media (max-width: 720px) {
   .main {

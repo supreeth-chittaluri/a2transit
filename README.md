@@ -1,22 +1,116 @@
-# a2transit
+<h1 align="center">a2transit</h1>
 
-Door-to-door journey planning across Ann Arbor's two bus networks — **TheRide
-(AAATA)**, the city system, and **U-M MBus**, the university campus network —
-merged into a single routing graph, transfers between them included.
+<p align="center">
+  <strong>Door-to-door journey planning across Ann Arbor's two bus networks — as one network.</strong><br>
+  TheRide (AAATA), the city system, and U&#8209;M MBus, the university shuttles,
+  merged into a single routing graph with the transfers between them included.
+</p>
 
-Neither agency's own trip planner will route you across the other's network,
-even where their stops share a corner. [728 of their stop pairs sit within
-400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
+<p align="center">
+  <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-3776ab?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white">
+  <img alt="PostGIS" src="https://img.shields.io/badge/PostgreSQL-PostGIS-336791?logo=postgresql&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-Vite-61dafb?logo=react&logoColor=black">
+  <img alt="MapLibre" src="https://img.shields.io/badge/MapLibre-GL_JS-295daa">
+  <img alt="370 tests" src="https://img.shields.io/badge/tests-370%20passing-4ade80">
+  <img alt="MIT" src="https://img.shields.io/badge/licence-MIT-blue">
+</p>
 
-**Status:** all nine milestones complete. Door-to-door planning across both
-agencies against live vehicle positions, in ~3 ms, verified against two
-independent oracles and deployable to four free tiers. Blake Transit Center to Central Campus is twelve minutes:
-TheRide route 4, a three-minute walk, then MBus CS. Neither agency's planner
-will tell you that.
+<p align="center">
+  <img src="docs/images/planner.jpg" alt="a2transit planning a trip from Blake Transit Center to Central Campus, with the route drawn on a map and live buses shown" width="100%">
+</p>
+
+## The problem
+
+**Neither agency's trip planner will route you across the other's network** —
+not even where their stops share a corner. 728 of their stop pairs sit within
+400 m of each other and [several are under 2 m apart][premise]: TheRide's
+"Bonisteel + Beal" and MBus's "Cooley Lab Outbound" are the same piece of
+pavement, 40 cm apart, and no planner in existence will connect them.
+
+So a rider going from downtown to the medical campus is told to take one bus and
+walk, or is told nothing at all.
+
+a2transit answers it in **3 milliseconds**: Blake Transit Center to Central
+Campus is twelve minutes — TheRide route 4, a three-minute walk at Washtenaw and
+Geddes, then MBus CS. It plans from a street address to a street address,
+adjusts for buses that are actually running late, and shows you where they are.
+
+[premise]: docs/feeds.md#2-the-cross-agency-transfer-premise-is-real
+
+## Why it is harder than it sounds
+
+| | |
+|---|---|
+| **The IDs collide, and silently** | 90 `stop_id`s, 800 `trip_id`s and all three of TheRide's `service_id`s appear in both feeds as different things. TheRide's service `3` means Mon–Fri; MBus's means Monday only. Joining them yields a *plausible* schedule that is wrong. Every key in the schema is composite. |
+| **Time is not a clock** | GTFS times pass midnight — MBus reaches `27:15:00`. Stored as integer seconds from service midnight over a {D−1, D, D+1} window, so a query at 00:30 still sees yesterday's buses. |
+| **The calendar is load-bearing** | Reading `calendar.txt` alone gives 3,620 MBus trips on an ordinary Thursday instead of 1,668, and 3,490 on Labor Day instead of 366. |
+| **Fast and correct are different programs** | RAPTOR is the engine; a time-expanded Dijkstra is kept as an oracle and 500 seeded cases are run through both. It has caught three real bugs that tests written against the fast path would have agreed with. |
+| **The feeds move** | Both agencies' published GTFS URLs were dead when this started. TheRide's realtime endpoints are in no registry at all and were traced through their Clever Devices backend. |
+
+## What it does
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Plans across both agencies.** Every non-dominated option — fewest changes
+first, fastest last — with the route drawn along its published shape and walking
+legs dashed.
+
+**Door to door.** Type a street address, or click the map. A place becomes a
+stop no vehicle serves, joined to the network by footpaths, so both routing
+engines handle it without knowing what a place is.
+
+**Live.** GTFS-Realtime folded into the timetable *before* the search runs, so
+delays change which bus you are told to catch — not just the number printed next
+to it.
+
+</td>
+<td width="50%" valign="top">
+
+<img src="docs/images/departures.jpg" alt="Departure board for a stop, showing the next twelve departures with countdowns" width="100%">
+
+</td>
+</tr>
+</table>
+
+<img src="docs/images/mobile.jpg" alt="The planner on a phone-sized screen" align="right" width="230">
+
+**Departure boards** off any boarding stop, read from the router's own timetable
+so the board and the planner agree about holidays.
+
+**Service alerts, ranked** — the two agencies publish 23 at a time, most about
+somewhere you are not going. Alerts naming a route in your plan show; the rest
+collapse behind a count.
+
+**Shareable links.** The trip lives in the query string.
+
+**Keyboard and screen readers.** The search is a real combobox: arrows, Enter,
+Escape, `aria-activedescendant`.
+
+**Mobile.** Map above, itinerary below.
+
+<br clear="right">
+
+## Numbers
+
+| | |
+|---:|---|
+| **3.1 ms** | median plan, p95 7.5 ms — against a 50 ms target |
+| **19×** | faster than the Dijkstra reference it is checked against |
+| **0** | arrival mismatches across 500 seeded differential cases |
+| **8,308** | generated footpaths, 1,456 of them crossing between agencies |
+| **345,160** | rows loaded from both feeds, in ~2.5 s |
+| **370** | tests — 344 backend, 26 frontend |
+| **$0** | every tier runs on a free plan, no credit card |
+
+All of it reproducible: [`scripts/measure.py`](scripts/measure.py) prints every
+figure above in one run. Details under [Measurements](#measurements).
 
 ---
 
-## What this is
+## The stack
 
 | | |
 |---|---|
@@ -31,6 +125,13 @@ will tell you that.
 Every dependency is free with no credit card on file. Deployment targets are
 free tiers: Fly.io or Render (API), Neon or Supabase (Postgres), Upstash
 (Redis), Vercel or Cloudflare Pages (frontend).
+
+**Where to read next.** [Getting started](#getting-started) to run it ·
+[Two engines](#two-engines) for why there are two ·
+[Walking](#walking-and-why-it-took-a-milestone) for the milestone that made the
+two networks one · [Realtime](#realtime) for how live data reaches the search ·
+[Measurements](#measurements) for the numbers and the script that produces them ·
+[Milestones](#milestones) for how it was built, in order.
 
 ---
 

@@ -1,0 +1,54 @@
+MIT License
+
+Copyright (c) 2026 Supreeth Chittaluri
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+THE TRANSIT DATA IS NOT COVERED BY THIS LICENCE.
+
+The MIT grant above applies to the source code in this repository and to
+nothing else. No transit data is redistributed here — the feeds are downloaded
+at runtime from each agency, and `data/` is git-ignored precisely so that this
+stays true.
+
+If you run this, you are consuming those feeds directly and their terms apply
+to you rather than to me:
+
+  * AAATA/TheRide grant a "limited, nonexclusive, non-assignable,
+    nontransferable, revocable license" for the purpose of assisting transit
+    riders or promoting public transportation. It requires displaying the
+    notice below prominently wherever their data appears, refreshing the GTFS
+    within three business days of a new publication, and not using their logos
+    or other intellectual property. "Nontransferable" is why the ZIPs are not
+    committed to this repository.
+
+        Transit scheduling, geographic, and real-time data provided by
+        permission of AAATA/TheRide.
+
+  * University of Michigan Transit Services publish MBus data through the
+    Mobility Database and Transitland without a stated restriction.
+
+TheRide's realtime endpoints are undocumented and appear in no feed registry;
+see docs/feeds.md for how they were found and why anything depending on them
+must degrade gracefully. Treat them as a courtesy, not a contract.
+
+Map tiles are © OpenFreeMap and © OpenMapTiles, from OpenStreetMap data
+© OpenStreetMap contributors, under the Open Database License.
