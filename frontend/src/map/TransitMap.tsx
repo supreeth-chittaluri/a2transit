@@ -56,6 +56,53 @@ function toGeoJson(itinerary: Itinerary): GeoJSON.FeatureCollection {
   };
 }
 
+/**
+ * Adds the itinerary source and its three layers, if they are not already
+ * there. Idempotent and callable at any time, rather than only from inside the
+ * one `load` event — a style can finish loading, or be swapped, at moments a
+ * single one-shot listener does not cover.
+ */
+function addItineraryLayers(instance: maplibregl.Map): boolean {
+  if (!instance.isStyleLoaded()) return false;
+  if (instance.getSource(ROUTE_SOURCE)) return true;
+
+  instance.addSource(ROUTE_SOURCE, {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] },
+  });
+  // A dark casing under the coloured line keeps a pale route legible over pale
+  // streets without darkening the route colour itself.
+  instance.addLayer({
+    id: CASING_LAYER,
+    type: "line",
+    source: ROUTE_SOURCE,
+    filter: ["==", ["get", "kind"], "ride"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#0c0e12", "line-width": 9, "line-opacity": 0.28 },
+  });
+  instance.addLayer({
+    id: WALK_LAYER,
+    type: "line",
+    source: ROUTE_SOURCE,
+    filter: ["==", ["get", "kind"], "walk"],
+    layout: { "line-cap": "round" },
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": 3.5,
+      "line-dasharray": [0.6, 1.6],
+    },
+  });
+  instance.addLayer({
+    id: RIDE_LAYER,
+    type: "line",
+    source: ROUTE_SOURCE,
+    filter: ["==", ["get", "kind"], "ride"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": 5 },
+  });
+  return true;
+}
+
 export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -78,42 +125,7 @@ export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: 
     instance.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), "top-right");
     map.current = instance;
 
-    instance.on("load", () => {
-      instance.addSource(ROUTE_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      // A dark casing under the coloured line keeps a pale route legible over
-      // pale streets without darkening the route colour itself.
-      instance.addLayer({
-        id: CASING_LAYER,
-        type: "line",
-        source: ROUTE_SOURCE,
-        filter: ["==", ["get", "kind"], "ride"],
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": "#0c0e12", "line-width": 9, "line-opacity": 0.28 },
-      });
-      instance.addLayer({
-        id: WALK_LAYER,
-        type: "line",
-        source: ROUTE_SOURCE,
-        filter: ["==", ["get", "kind"], "walk"],
-        layout: { "line-cap": "round" },
-        paint: {
-          "line-color": ["get", "color"],
-          "line-width": 3.5,
-          "line-dasharray": [0.6, 1.6],
-        },
-      });
-      instance.addLayer({
-        id: RIDE_LAYER,
-        type: "line",
-        source: ROUTE_SOURCE,
-        filter: ["==", ["get", "kind"], "ride"],
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": ["get", "color"], "line-width": 5 },
-      });
-    });
+    instance.on("load", () => addItineraryLayers(instance));
 
     instance.on("click", (event) => {
       pick.current?.(event.lngLat.lat, event.lngLat.lng);
@@ -141,16 +153,19 @@ export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: 
     const instance = map.current;
     if (!instance) return;
 
-    const draw = () => {
+    const draw = (): boolean => {
+      // Creates the layers if the style became ready after mount, so a draw is
+      // never lost to a listener that fired at the wrong moment.
+      if (!addItineraryLayers(instance)) return false;
       const source = instance.getSource(ROUTE_SOURCE) as maplibregl.GeoJSONSource | undefined;
-      if (!source) return;
+      if (!source) return false;
 
       for (const marker of endpointMarkers.current) marker.remove();
       endpointMarkers.current = [];
 
       if (!itinerary) {
         source.setData({ type: "FeatureCollection", features: [] });
-        return;
+        return true;
       }
 
       const data = toGeoJson(itinerary);
@@ -201,19 +216,31 @@ export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: 
           duration: reducedMotion() ? 0 : 600,
         });
       }
+      return true;
     };
 
-    // Asking the map whether the source exists, rather than tracking a `ready`
-    // flag set in the load handler. The flag could disagree with reality — if
-    // anything in that handler threw before setting it, `load` had already
-    // fired, the one-shot listener never ran again, and the route silently
-    // never drew while everything else on the map worked. This cannot drift:
-    // the condition *is* the thing being depended on.
+    if (draw()) return;
+
+    // The style was not ready. Retry on every style event until it works, then
+    // unsubscribe — rather than a one-shot `once("load")` or `once("idle")`.
     //
-    // `idle` rather than `load` for the retry, because idle fires repeatedly
-    // once the map settles, so a listener registered after load still fires.
-    if (instance.getSource(ROUTE_SOURCE)) draw();
-    else instance.once("idle", draw);
+    // This is what the deployed site actually needed, and what two previous
+    // attempts got wrong: a one-shot listener registered *after* its event has
+    // already fired never runs. The route silently never drew while the vehicle
+    // markers, which are plain DOM and need no style, carried on working — so
+    // the map looked alive and the journey was simply missing from it.
+    const retry = () => {
+      if (draw()) {
+        instance.off("styledata", retry);
+        instance.off("idle", retry);
+      }
+    };
+    instance.on("styledata", retry);
+    instance.on("idle", retry);
+    return () => {
+      instance.off("styledata", retry);
+      instance.off("idle", retry);
+    };
   }, [itinerary, padLeft, padBottom]);
 
   // -------------------------------------------------------------- vehicles
