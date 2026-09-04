@@ -524,13 +524,22 @@ Two caveats worth knowing before you trust these:
    Treat realtime as best-effort: routing must fall back to schedule-only when
    it is unavailable.
 
-### Attribution
+### Attribution and licences
 
-TheRide's data licence requires this notice be displayed prominently wherever
-their data appears, and that the GTFS data be refreshed within three business
-days of a new publication:
+The code is MIT. **The transit data is not**, and the two are kept apart on
+purpose: no feed data is committed here, `data/` is git-ignored, and TheRide's
+licence is explicitly nontransferable. Full terms and what they oblige this
+project to do: **[docs/licences.md](docs/licences.md)**.
+
+TheRide requires this notice be displayed prominently wherever their data
+appears. The app puts it in the footer of every screen, and the API returns it
+in the body of every `/plan` response, so a client that never opens the app
+still receives it:
 
 > Transit scheduling, geographic, and real-time data provided by permission of AAATA/TheRide.
+
+They also require the GTFS be refreshed within three business days of a new
+publication, which the weekly ingest cron satisfies.
 
 ---
 
