@@ -47,6 +47,15 @@ class PlanOutcome:
     itineraries: tuple[Itinerary, ...]
     engine_name: EngineName
     seconds: float
+    #: What live predictions did to the timetable this was planned on, or None
+    #: when it was planned on the schedule. Typed loosely to keep the routing
+    #: package from importing the realtime one — the dependency runs the other
+    #: way, and should.
+    delays: object | None = None
+
+    @property
+    def is_realtime(self) -> bool:
+        return self.delays is not None
 
     @property
     def fastest(self) -> Itinerary | None:

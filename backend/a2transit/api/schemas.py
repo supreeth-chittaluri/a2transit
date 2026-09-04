@@ -83,6 +83,15 @@ class ItineraryModel(ApiModel):
     legs: list[LegModel]
 
 
+class RealtimeInfo(ApiModel):
+    """Whether this plan used live data, and what that did."""
+
+    applied: bool
+    trips_matched: int = 0
+    runs_adjusted: int = 0
+    max_delay_seconds: int = 0
+
+
 class PlanResponse(ApiModel):
     origin: StopRef
     destination: StopRef
@@ -91,6 +100,7 @@ class PlanResponse(ApiModel):
     itineraries: list[ItineraryModel]
     engine: str
     query_ms: float
+    realtime: RealtimeInfo
     attribution: str
 
 

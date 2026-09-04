@@ -6,19 +6,28 @@ import { ItineraryList } from "./components/ItineraryList";
 import { TransitMap } from "./TransitMap";
 import { ApiError, planTrip, type PlanResponse } from "./lib/api";
 import { toLocalIso, toQueryValue, type Endpoint } from "./lib/endpoints";
+import { useVehicles } from "./lib/useVehicles";
 import { useApiHealth } from "./useApiHealth";
 
-function ApiStatus() {
+function ApiStatus({ vehicleCount, live }: { vehicleCount: number; live: boolean }) {
   const health = useApiHealth();
 
-  switch (health.state) {
-    case "checking":
-      return <span className="status status--pending">checking API…</span>;
-    case "up":
-      return <span className="status status--up">API v{health.version}</span>;
-    case "down":
-      return <span className="status status--down">API unreachable ({health.reason})</span>;
+  if (health.state === "checking") {
+    return <span className="status status--pending">checking API…</span>;
   }
+  if (health.state === "down") {
+    return <span className="status status--down">API unreachable ({health.reason})</span>;
+  }
+  return (
+    <span className="status">
+      {/* Realtime being off is a normal state, not a fault: the planner works
+          from the schedule and says so rather than pretending. */}
+      <span className={live ? "status--up" : "status--pending"}>
+        {live ? `● ${vehicleCount} buses live` : "○ schedule only"}
+      </span>
+      <span className="status__version">API v{health.version}</span>
+    </span>
+  );
 }
 
 type PlanState =
@@ -51,6 +60,7 @@ export default function App() {
   const [openField, setOpenField] = useState<"origin" | "destination" | null>(null);
   const [plan, setPlan] = useState<PlanState>({ state: "idle" });
   const [selected, setSelected] = useState(0);
+  const feed = useVehicles();
 
   // Picking on the map fills whichever end is still empty — destination first,
   // because an origin is usually typed and a destination is usually pointed at.
@@ -107,7 +117,7 @@ export default function App() {
       <header className="header">
         <h1 className="header__title">a2transit</h1>
         <p className="header__tagline">TheRide + U-M MBus, as one network</p>
-        <ApiStatus />
+        <ApiStatus vehicleCount={feed.vehicles.length} live={feed.state === "live"} />
       </header>
 
       <main className="main">
@@ -171,6 +181,12 @@ export default function App() {
                 the last run.
               </p>
             )}
+            {plan.state === "done" && plan.response.realtime.applied && (
+              <p className="realtime-note">
+                Live: {plan.response.realtime.runsAdjusted} trips adjusted, worst
+                delay {Math.round(plan.response.realtime.maxDelaySeconds / 60)} min.
+              </p>
+            )}
             {plan.state === "done" && itineraries.length > 0 && (
               <ItineraryList
                 itineraries={itineraries}
@@ -183,7 +199,7 @@ export default function App() {
           </div>
         </aside>
 
-        <TransitMap itinerary={shown} onPick={pickOnMap} />
+        <TransitMap itinerary={shown} vehicles={feed.vehicles} onPick={pickOnMap} />
       </main>
 
       <footer className="footer">{ATTRIBUTION}</footer>

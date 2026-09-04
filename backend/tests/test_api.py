@@ -211,3 +211,60 @@ class TestDepartures:
 
     def test_an_unknown_stop_is_a_404(self, api: TestClient) -> None:
         assert api.get("/stops/theride/999999/departures").status_code == 404
+
+
+class TestRealtimeEndpoints:
+    """The HTTP surface over Redis. These run without a poller.
+
+    That is the case worth covering: realtime is an enhancement, and every one
+    of these has to answer sensibly when nothing has ever been polled — which is
+    also what a fresh checkout looks like.
+    """
+
+    def test_status_reports_whether_realtime_is_live(self, api: TestClient) -> None:
+        body = api.get("/realtime/status").json()
+
+        assert set(body) >= {"live", "redisAvailable", "feedAges", "vehicleCount"}
+        assert isinstance(body["live"], bool)
+
+    def test_vehicles_is_a_list_even_with_no_poller(self, api: TestClient) -> None:
+        body = api.get("/realtime/vehicles").json()
+
+        assert isinstance(body["vehicles"], list)
+        assert body["count"] == len(body["vehicles"])
+
+    def test_alerts_is_a_list_even_with_no_poller(self, api: TestClient) -> None:
+        assert isinstance(api.get("/realtime/alerts").json()["alerts"], list)
+
+    def test_a_plan_says_whether_it_used_live_data(self, api: TestClient) -> None:
+        body = api.get(
+            "/plan",
+            params={"from": "theride:1605", "to": "mbus:207", "depart": THURSDAY_9AM},
+        ).json()
+
+        assert "applied" in body["realtime"]
+
+    def test_realtime_can_be_turned_off_per_request(self, api: TestClient) -> None:
+        """So the schedule answer stays reachable — for comparing against, and
+        for a rider who wants to know what is supposed to happen."""
+        body = api.get(
+            "/plan",
+            params={
+                "from": "theride:1605",
+                "to": "mbus:207",
+                "depart": THURSDAY_9AM,
+                "realtime": "false",
+            },
+        ).json()
+
+        assert body["realtime"]["applied"] is False
+
+    def test_the_websocket_opens_with_a_snapshot(self, api: TestClient) -> None:
+        """A client connecting between polls needs something to draw at once,
+        rather than an empty map until the next cycle lands."""
+        with api.websocket_connect("/ws/vehicles") as socket:
+            first = socket.receive_json()
+
+        assert first["type"] == "vehicles"
+        assert first["snapshot"] is True
+        assert isinstance(first["vehicles"], list)

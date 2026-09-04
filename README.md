@@ -8,8 +8,8 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [728 of their stop pairs sit within
 400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M6 complete — plan a door-to-door trip between two addresses, on a
-map, in about 3 ms. Blake Transit Center to Central Campus is twelve minutes:
+**Status:** M7 complete — door-to-door planning against live vehicle positions
+and predictions. Blake Transit Center to Central Campus is twelve minutes:
 TheRide route 4, a three-minute walk, then MBus CS. Neither agency's planner
 will tell you that.
 
@@ -72,6 +72,36 @@ last — and draws the selected one along the route's published shape.
 > development machine. Change them in `docker-compose.yml`, `vite.config.ts`,
 > and `.env` if you want the conventional ones.
 
+### Realtime
+
+```bash
+cd backend
+./.venv/bin/python -m a2transit.realtime              # poll both agencies
+./.venv/bin/python -m a2transit.realtime --once       # one cycle
+./.venv/bin/python -m a2transit.realtime --simulate-delay theride:3572020:900
+```
+
+Six feeds — vehicles, trips and alerts for each agency — every 20 seconds into
+Redis. The poller is one process regardless of how many API workers run: the
+agencies see one client, and an API restart does not interrupt the feed.
+
+**Realtime is an overlay, not a mode.** Predictions are folded into a copy of
+the cached schedule timetable, and RAPTOR is handed something it cannot tell
+from the schedule — so the Pareto set, the horizon, the transfer floor and every
+differential test keep working unchanged. The consequence worth having: a
+delayed bus is not merely reported as late, it *loses*. Delay route 4's 06:02 by
+fifteen minutes and the planner puts the rider on the 06:10 instead.
+
+Everything written to Redis expires. Stale realtime is worse than none — a
+five-minute-old "on time" will send someone running for a bus that has gone — so
+if the poller dies the keys drain and planning falls back to the schedule
+inside two minutes, with no health check to wire up and no code path that only
+runs during an outage.
+
+Neither agency publishes `delay`; both publish absolute predicted times. A delay
+therefore does not exist until something compares a prediction to the schedule,
+which is why `realtime/delays.py` is the only module that holds both.
+
 ### The API
 
 | Endpoint | What it does |
@@ -80,6 +110,9 @@ last — and draws the selected one along the route's published shape.
 | `GET /stops/search?q=` | Trigram autocomplete over both feeds' stops. |
 | `GET /stops/{agency}/{id}/departures` | The next departures, read off the router's own timetable so the board and the planner agree about holidays. |
 | `GET /geocode?q=` | Address to coordinates. Proxied server-side because Nominatim's policy asks for a real User-Agent and one request a second, which a browser tab cannot promise. |
+| `GET /realtime/status` | Whether live data is flowing, and how old each feed is. |
+| `GET /realtime/vehicles` · `/realtime/alerts` | Snapshots, for callers that would rather not hold a socket open. |
+| `WS /ws/vehicles` | Live positions. Opens with the current snapshot, then forwards each poll. Every frame is a whole snapshot, never a diff, so a dropped frame costs nothing and reconnection needs no reconciliation. |
 
 ```bash
 curl 'localhost:8001/plan?from=theride:1605&to=mbus:207&depart=2026-09-10T09:00'
@@ -354,7 +387,7 @@ GTFS static (TheRide + MBus)  ──▶  ingest job  ──▶  Postgres + PostG
                                           stop→routes index, footpaths (PostGIS
                                           ST_DWithin, 400 m, cross-agency)
                                                         │
-GTFS-Realtime (both agencies)  ──▶  poller  ──▶  Redis  ──▶  routing engine (RAPTOR)
+GTFS-Realtime (both agencies)  ──▶  poller  ──▶  Redis  ──▶  timetable overlay
                                              │                   │
                                              │            FastAPI /plan endpoint
                                              │                   │
@@ -408,9 +441,10 @@ bus.
 - [x] **M6 — Frontend.** Geocoding, stop autocomplete, route drawn on the map,
       itinerary panel. *Done: one field takes a stop or an address; mobile
       layout; walk legs dashed, rides drawn along the published shape.*
-- [ ] **M7 — Realtime.** Poll GTFS-RT into Redis; delay-adjusted arrival times;
-      WebSocket vehicle markers and alerts. *Simulated delay moves an
-      itinerary's arrival time and a marker live.*
+- [x] **M7 — Realtime.** Poll GTFS-RT into Redis; delay-adjusted arrival times;
+      WebSocket vehicle markers and alerts. *Done: ~250 predictions folded into
+      the timetable in 50 ms; a 15-minute delay on route 4's 06:02 does not just
+      move the arrival, it moves the rider to the 06:10.*
 - [ ] **M8 — Polish + deploy.** Shareable trip URLs, live departures board,
       error and empty states, all four tiers on free plans. *Public URL.*
 - [ ] **M9 — Measure.** Feed scale, query latency p50/p95, correctness

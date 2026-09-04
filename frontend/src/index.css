@@ -410,3 +410,26 @@ body {
   font-size: 0.8rem;
 }
 .maplibregl-popup-tip { border-top-color: var(--raised) !important; }
+
+
+/* ------------------------------------------------------------ realtime */
+
+.status {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.status__version { color: var(--muted); }
+
+.realtime-note {
+  margin: 0 0 0.6rem;
+  padding: 0.35rem 0.55rem;
+  border-left: 2px solid var(--up);
+  background: rgb(74 222 128 / 8%);
+  color: var(--muted);
+  font-size: 0.75rem;
+}

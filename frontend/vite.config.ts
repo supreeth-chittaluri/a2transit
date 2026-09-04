@@ -11,6 +11,9 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:8001",
         changeOrigin: true,
+        // ws so /api/ws/vehicles upgrades through the proxy rather than
+        // 404ing; without it the live map silently never connects.
+        ws: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },

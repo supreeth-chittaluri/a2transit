@@ -4,11 +4,13 @@ import { useEffect, useRef } from "react";
 import { ANN_ARBOR_CENTER, DEFAULT_ZOOM, MAP_STYLE_URL } from "./config";
 import type { Itinerary } from "./lib/api";
 import { legColor } from "./lib/endpoints";
+import type { Vehicle } from "./lib/useVehicles";
 
 import "maplibre-gl/dist/maplibre-gl.css";
 
 interface Props {
   itinerary: Itinerary | null;
+  vehicles?: Vehicle[];
   onPick?: (lat: number, lon: number) => void;
 }
 
@@ -16,6 +18,30 @@ const ROUTE_SOURCE = "itinerary";
 const RIDE_LAYER = "itinerary-rides";
 const WALK_LAYER = "itinerary-walks";
 const CASING_LAYER = "itinerary-casing";
+const VEHICLE_SOURCE = "vehicles";
+const VEHICLE_LAYER = "vehicle-dots";
+const VEHICLE_ARROW_LAYER = "vehicle-arrows";
+
+/** Buses as GeoJSON points, carrying their bearing so they can be pointed. */
+function vehiclesToGeoJson(vehicles: Vehicle[]): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: vehicles.map((vehicle) => ({
+      type: "Feature" as const,
+      properties: {
+        agency: vehicle.agency,
+        route: vehicle.routeId ?? "",
+        bearing: vehicle.bearing ?? 0,
+        // A bus with no trip is deadheading or off-route. It is still a real
+        // bus in a real place, so it is drawn — just not labelled with a route
+        // it is not running.
+        hasTrip: vehicle.tripId ? 1 : 0,
+        color: vehicle.agency === "mbus" ? "#00274c" : "#c8102e",
+      },
+      geometry: { type: "Point" as const, coordinates: [vehicle.lon, vehicle.lat] },
+    })),
+  };
+}
 
 /**
  * Ride legs are drawn from the shape the agency publishes, clipped to the
@@ -59,7 +85,7 @@ function boundsOf(itinerary: Itinerary): maplibregl.LngLatBounds {
   return bounds;
 }
 
-export function TransitMap({ itinerary, onPick }: Props) {
+export function TransitMap({ itinerary, vehicles = [], onPick }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const ready = useRef(false);
@@ -118,6 +144,43 @@ export function TransitMap({ itinerary, onPick }: Props) {
         filter: ["==", ["get", "kind"], "ride"],
         layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": ["get", "color"], "line-width": 5 },
+      });
+
+      instance.addSource(VEHICLE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: VEHICLE_LAYER,
+        type: "circle",
+        source: VEHICLE_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 3, 15, 7],
+          "circle-color": ["get", "color"],
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "#ffffff",
+          // A deadheading bus is drawn faintly: it is where the map says, but
+          // it is not going to pick anybody up.
+          "circle-opacity": ["case", ["==", ["get", "hasTrip"], 1], 0.95, 0.4],
+        },
+      });
+      instance.addLayer({
+        id: VEHICLE_ARROW_LAYER,
+        type: "symbol",
+        source: VEHICLE_SOURCE,
+        minzoom: 13,
+        filter: ["==", ["get", "hasTrip"], 1],
+        layout: {
+          "text-field": ["get", "route"],
+          "text-size": 10,
+          "text-offset": [0, -1.2],
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#e6e8ec",
+          "text-halo-color": "#10131a",
+          "text-halo-width": 1.2,
+        },
       });
       ready.current = true;
     });
@@ -188,6 +251,21 @@ export function TransitMap({ itinerary, onPick }: Props) {
     if (ready.current) draw();
     else instance.once("load", draw);
   }, [itinerary]);
+
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance) return;
+
+    const draw = () => {
+      const source = instance.getSource(VEHICLE_SOURCE) as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      source?.setData(vehiclesToGeoJson(vehicles));
+    };
+
+    if (ready.current) draw();
+    else instance.once("load", draw);
+  }, [vehicles]);
 
   return <div ref={container} className="map" />;
 }

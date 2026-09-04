@@ -9,6 +9,14 @@ the loaded feed, so caching them is safe until an ingest runs; `invalidate()`
 is what a refresh calls. The cache is small on purpose: a rider planning
 tomorrow's trip should not evict today's.
 
+**Realtime is an overlay, not a mode.** A cached schedule timetable is patched
+with whatever predictions Redis holds, and the result is an ordinary
+`RaptorTimetable` that the router cannot tell from the schedule. Nothing in
+RAPTOR knows realtime exists. The overlay is cached against the poller's feed
+timestamp, so it is rebuilt once per poll rather than once per request, and when
+Redis holds nothing — no poller, no Redis, a dead agency endpoint — planning
+falls through to the schedule with no branch anywhere to get wrong.
+
 **Ride legs get their real geometry.** An itinerary drawn as straight lines
 between stops is visibly wrong on a map — Ann Arbor's routes wind. GTFS ships
 the shape, so each ride leg is clipped out of it with ST_LineSubstring between
@@ -24,10 +32,12 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import Engine, text
 
+from a2transit.realtime import store
+from a2transit.realtime.delays import DelayReport, apply_predictions
 from a2transit.routing.engine import PlanOutcome, plan_itineraries
 from a2transit.routing.models import Itinerary, RideLeg
 from a2transit.routing.patterns import RaptorTimetable, build_raptor_timetable
@@ -56,6 +66,8 @@ class TimetableCache:
         self._lock = threading.Lock()
         self._raptor: OrderedDict[dt.date, RaptorTimetable] = OrderedDict()
         self._dijkstra: OrderedDict[dt.date, Timetable] = OrderedDict()
+        #: (date, prediction count, newest predicted time) -> patched timetable.
+        self._live: OrderedDict[tuple, tuple[RaptorTimetable, DelayReport]] = OrderedDict()
 
     def raptor(self, day: dt.date) -> RaptorTimetable:
         with self._lock:
@@ -88,6 +100,51 @@ class TimetableCache:
         with self._lock:
             self._raptor.clear()
             self._dijkstra.clear()
+            self._live.clear()
+
+    def live(self, day: dt.date) -> tuple[RaptorTimetable, DelayReport | None]:
+        """The schedule for `day`, with live predictions folded in where there are any.
+
+        Keyed on the number of predictions and the newest timestamp among them,
+        which changes exactly when a poll lands. Reading Redis is cheap; applying
+        250 predictions to the pattern tables is ~50 ms, and doing that per
+        request would cost more than the query it is decorating.
+        """
+        with store.client_or_none() as client:
+            predictions = store.read_predictions(client)
+
+        if not predictions:
+            return self.raptor(day), None
+
+        # Not a hash of the payload: two polls a second apart differ in almost
+        # every predicted second, so hashing would rebuild every time and buy
+        # nothing. The count and the freshest stop time move together with the
+        # poll and are far cheaper to compute.
+        newest = max(
+            (
+                stop.best_time
+                for prediction in predictions
+                for stop in prediction.stops
+                if stop.best_time is not None
+            ),
+            default=0,
+        )
+        version = (day, len(predictions), newest)
+
+        with self._lock:
+            cached = self._live.get(version)
+            if cached is not None:
+                self._live.move_to_end(version)
+                return cached
+
+        # Built outside the lock: it is ~50 ms of pure computation and holding
+        # the lock would stall every other date's lookups behind it.
+        patched, report = apply_predictions(self.raptor(day), predictions)
+        with self._lock:
+            self._live[version] = (patched, report)
+            while len(self._live) > self._size:
+                self._live.popitem(last=False)
+        return patched, report
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +154,10 @@ class PlanRequest:
     departure: dt.datetime
     engine_name: str = "raptor"
     attachment: PlaceAttachment | None = None
+    #: Plan against live predictions where they exist. Ignored by the Dijkstra
+    #: reference, which stays on the schedule so it remains an oracle rather
+    #: than a second opinion on the same moving data.
+    realtime: bool = True
 
 
 def run_plan(engine: Engine, cache: TimetableCache, request: PlanRequest) -> PlanOutcome:
@@ -115,10 +176,14 @@ def run_plan(engine: Engine, cache: TimetableCache, request: PlanRequest) -> Pla
             dijkstra_timetable=timetable,
         )
 
-    timetable = cache.raptor(day)
+    report: DelayReport | None = None
+    if request.realtime:
+        timetable, report = cache.live(day)
+    else:
+        timetable = cache.raptor(day)
     if request.attachment is not None:
         timetable = with_places_raptor(timetable, request.attachment)
-    return plan_itineraries(
+    outcome = plan_itineraries(
         engine,
         request.origin,
         request.destination,
@@ -126,6 +191,7 @@ def run_plan(engine: Engine, cache: TimetableCache, request: PlanRequest) -> Pla
         engine_name="raptor",
         raptor_timetable=timetable,
     )
+    return outcome if report is None else replace(outcome, delays=report)
 
 
 #: The stretch of a trip's published shape between two of its stops.

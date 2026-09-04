@@ -46,6 +46,13 @@ export interface Itinerary {
   legs: Leg[];
 }
 
+export interface RealtimeInfo {
+  applied: boolean;
+  tripsMatched: number;
+  runsAdjusted: number;
+  maxDelaySeconds: number;
+}
+
 export interface PlanResponse {
   origin: StopRef;
   destination: StopRef;
@@ -53,6 +60,7 @@ export interface PlanResponse {
   itineraries: Itinerary[];
   engine: string;
   queryMs: number;
+  realtime: RealtimeInfo;
   attribution: string;
 }
 

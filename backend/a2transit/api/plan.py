@@ -19,7 +19,12 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import Engine, text
 
-from a2transit.api.schemas import PlanResponse, StopRef, to_itinerary_model
+from a2transit.api.schemas import (
+    PlanResponse,
+    RealtimeInfo,
+    StopRef,
+    to_itinerary_model,
+)
 from a2transit.db.models import AgencySource
 from a2transit.db.session import get_engine
 from a2transit.routing.places import (
@@ -121,6 +126,9 @@ def plan(
     ),
     engine_name: str = Query("raptor", alias="engine", pattern="^(raptor|dijkstra)$"),
     geometry: bool = Query(True, description="Include route shapes for ride legs."),
+    realtime: bool = Query(
+        True, description="Plan against live predictions where the poller has any."
+    ),
 ) -> PlanResponse:
     engine = get_engine()
     departure = depart or dt.datetime.now().replace(microsecond=0)
@@ -178,6 +186,7 @@ def plan(
             departure=departure,
             engine_name=engine_name,
             attachment=attachment,
+            realtime=realtime,
         ),
     )
 
@@ -196,7 +205,19 @@ def plan(
         ],
         engine=outcome.engine_name,
         query_ms=round(outcome.seconds * 1000, 3),
+        realtime=_realtime_info(outcome.delays),
         attribution=ATTRIBUTION,
+    )
+
+
+def _realtime_info(report: object | None) -> RealtimeInfo:
+    if report is None:
+        return RealtimeInfo(applied=False)
+    return RealtimeInfo(
+        applied=True,
+        trips_matched=report.trips_matched,
+        runs_adjusted=report.runs_adjusted,
+        max_delay_seconds=report.max_delay_seconds,
     )
 
 
