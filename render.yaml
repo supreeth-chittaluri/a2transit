@@ -36,6 +36,14 @@ services:
       - key: REALTIME_INLINE_POLL
         value: "true"
 
+      # 512 MB on the free plan. Measured: 68 MB idle, +54 MB for the first
+      # RAPTOR timetable, +31 MB per extra date — then the same again for the
+      # Dijkstra reference, which `?engine=dijkstra` makes publicly reachable,
+      # and again for each live-adjusted overlay. Four dates per engine fits a
+      # real machine and does not fit this one.
+      - key: TIMETABLE_CACHE_SIZE
+        value: "2"
+
       # Credentials, set in the dashboard rather than committed.
       - key: DATABASE_URL
         sync: false

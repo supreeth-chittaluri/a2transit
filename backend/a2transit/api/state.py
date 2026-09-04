@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from a2transit.config import get_settings
 from a2transit.db.session import get_engine
 from a2transit.routing.service import TimetableCache
 
 
 @lru_cache(maxsize=1)
 def timetable_cache() -> TimetableCache:
-    return TimetableCache(get_engine())
+    # Size comes from settings so a small host can hold fewer dates. The
+    # default suits a machine with room; see Settings.timetable_cache_size for
+    # what each date actually costs.
+    return TimetableCache(get_engine(), size=get_settings().timetable_cache_size)

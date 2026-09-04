@@ -152,3 +152,22 @@ def test_a_real_cycle_stores_something(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result is not None
     assert result.vehicles or result.trips or result.alerts
+
+
+def test_cache_size_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 512 MB host must be able to hold fewer service dates than a real one.
+
+    Not a detail: `?engine=dijkstra` is public, so a visitor can make the API
+    build the expensive timetable too, and the default of four dates per engine
+    does not fit a free tier alongside the live overlays.
+    """
+    from a2transit.api import state
+
+    monkeypatch.setenv("TIMETABLE_CACHE_SIZE", "2")
+    get_settings.cache_clear()
+    state.timetable_cache.cache_clear()
+    try:
+        assert state.timetable_cache()._size == 2
+    finally:
+        state.timetable_cache.cache_clear()
+        get_settings.cache_clear()

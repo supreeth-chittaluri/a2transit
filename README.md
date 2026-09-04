@@ -215,7 +215,7 @@ container, with the production environment set.
 Render's free plan has no worker tier, so `render.yaml` sets
 `REALTIME_INLINE_POLL=true` and the API polls for itself. That is safe here only
 because the image runs a single uvicorn worker, for reasons that predate it: the
-timetable cache is per-process and a service date is ~120 MB resident. One
+timetable cache is per-process, so every worker is another copy of it. One
 poller per process is still one poller. Enabling it *alongside* a real worker,
 or under multiple uvicorn workers, would multiply the request rate at two
 unauthenticated endpoints neither agency has promised us anything about — which
@@ -246,9 +246,15 @@ Three things about the deployment that are load-bearing rather than incidental:
   because realtime is an enhancement by construction and failing readiness would
   pull a working planner out of the load balancer over the loss of a feature it
   is designed to survive.
-- **One uvicorn worker per instance.** The timetable cache is per-process and a
-  service date is ~120 MB resident, so four workers is four copies of the same
-  tables. Scale with instances.
+- **One uvicorn worker per instance.** The timetable cache is per-process, so
+  four workers is four copies of the same tables. Measured on the 2026-08-23
+  feeds: 68 MB idle, +54 MB for the first RAPTOR timetable, +31 MB for each
+  further service date — the trip stop sequences are shared and only the
+  per-date instances are new. Scale with instances, and set
+  `TIMETABLE_CACHE_SIZE` to suit the box: the default of 4 dates per engine
+  does not fit a 512 MB free tier once the Dijkstra timetables and live
+  overlays are counted, and `?engine=dijkstra` is public, so a visitor can ask
+  for the expensive one.
 - **The SPA needs a catch-all rewrite.** A shared trip link carries its state in
   the query string, and without the rewrite it 404s on reload — which is the one
   URL people actually paste.

@@ -41,8 +41,11 @@ primary_region = "ord"          # Chicago: nearest region to Ann Arbor.
     path = "/ready"
 
 [[vm]]
-  # 512 MB rather than 256: the RAPTOR timetable for one service date is ~120 MB
-  # resident and the cache holds four dates.
+  # 512 MB rather than 256. Measured: 68 MB idle, +54 MB for the first RAPTOR
+  # timetable, +31 MB per further service date, and the same again for the
+  # Dijkstra reference that `?engine=dijkstra` exposes. The default cache of 4
+  # dates per engine is comfortable here; set TIMETABLE_CACHE_SIZE lower on a
+  # smaller machine.
   memory = "512mb"
   cpu_kind = "shared"
   cpus = 1

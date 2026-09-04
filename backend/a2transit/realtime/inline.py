@@ -15,8 +15,8 @@ is better than it first sounds:
     looking, which is the only time freshness matters.
 
 What makes it safe here is that the API runs one worker per instance, for
-reasons that predate this (the timetable cache is per-process and a service date
-costs ~120 MB). So "one poller per process" is still one poller. If that ever
+reasons that predate this: the timetable cache is per-process, so each worker is
+another copy of it. So "one poller per process" is still one poller. If that ever
 stops being true, this must not be enabled — hence the explicit setting rather
 than a guess based on the environment: two workers means two pollers means twice
 the request rate at somebody else's unauthenticated endpoint.

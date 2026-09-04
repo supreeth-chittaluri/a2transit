@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 #: Service dates held at once. Today, tomorrow, and whatever someone is poking
 #: at — beyond that the memory is not worth the hit rate.
+#: Default dates held per engine. Overridden by Settings.timetable_cache_size,
+#: which is what the deployments actually set.
 CACHE_SIZE = 4
 
 

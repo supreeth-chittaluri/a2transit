@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     mbus_gtfsrt_trips_url: str = "https://mbus.ltp.umich.edu/gtfsrt/trips"
     mbus_gtfsrt_alerts_url: str = "https://mbus.ltp.umich.edu/gtfsrt/alerts"
 
+    #: Service dates kept in memory per engine. Measured on the 2026-08-23
+    #: feeds: a process idles at 68 MB, the first RAPTOR timetable costs 54 MB
+    #: and each additional date about 31 MB, because the trip stop sequences
+    #: are shared and only the per-date instances are new.
+    #:
+    #: 4 is right for a machine with room. A 512 MB free tier is not, once the
+    #: Dijkstra timetables and the live overlays are counted too — and
+    #: `?engine=dijkstra` is public, so a visitor can ask for the expensive one.
+    timetable_cache_size: int = 4
+
     realtime_poll_seconds: int = 20
 
     #: Poll the agency feeds from inside the API process instead of a separate
