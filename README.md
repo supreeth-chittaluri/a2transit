@@ -7,12 +7,21 @@
 </p>
 
 <p align="center">
+  <a href="https://a2transit.vercel.app"><strong>▶ Try it live</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://a2transit-api.onrender.com/docs">API docs</a>
+  &nbsp;·&nbsp;
+  <a href="#measurements">Measurements</a>
+</p>
+
+<p align="center">
+  <a href="https://a2transit.vercel.app"><img alt="live demo" src="https://img.shields.io/badge/demo-live-4ade80"></a>
   <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-3776ab?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white">
   <img alt="PostGIS" src="https://img.shields.io/badge/PostgreSQL-PostGIS-336791?logo=postgresql&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-Vite-61dafb?logo=react&logoColor=black">
   <img alt="MapLibre" src="https://img.shields.io/badge/MapLibre-GL_JS-295daa">
-  <img alt="370 tests" src="https://img.shields.io/badge/tests-370%20passing-4ade80">
+  <img alt="376 tests" src="https://img.shields.io/badge/tests-376%20passing-4ade80">
   <img alt="MIT" src="https://img.shields.io/badge/licence-MIT-blue">
 </p>
 
@@ -35,6 +44,10 @@ a2transit answers it in **3 milliseconds**: Blake Transit Center to Central
 Campus is twelve minutes — TheRide route 4, a three-minute walk at Washtenaw and
 Geddes, then MBus CS. It plans from a street address to a street address,
 adjusts for buses that are actually running late, and shows you where they are.
+
+**[Try that exact trip →](https://a2transit.vercel.app/?from=theride:1605&to=mbus:207&depart=2026-09-10T09:00)**
+The demo runs on free tiers, so it sleeps after fifteen minutes idle — the first
+load may spend a minute waking the API up, and says so while it does.
 
 [premise]: docs/feeds.md#2-the-cross-agency-transfer-premise-is-real
 
@@ -102,11 +115,17 @@ Escape, `aria-activedescendant`.
 | **0** | arrival mismatches across 500 seeded differential cases |
 | **8,308** | generated footpaths, 1,456 of them crossing between agencies |
 | **345,160** | rows loaded from both feeds, in ~2.5 s |
-| **370** | tests — 344 backend, 26 frontend |
+| **376** | tests — 350 backend, 26 frontend |
 | **$0** | every tier runs on a free plan, no credit card |
 
 All of it reproducible: [`scripts/measure.py`](scripts/measure.py) prints every
 figure above in one run. Details under [Measurements](#measurements).
+
+Those are engine numbers, measured on a laptop. **The public demo is slower and
+honestly so:** Render's free plan throttles CPU hard, and the same query that
+takes 3.1 ms locally takes 80–170 ms there. Nothing in the code differs — it is
+the same container — and it is worth knowing which number is which before
+quoting either.
 
 ---
 
@@ -175,6 +194,33 @@ last — and draws the selected one along the route's published shape.
 > and `.env` if you want the conventional ones.
 
 ## Deploying
+
+**Live at [a2transit.vercel.app](https://a2transit.vercel.app)**, API at
+[a2transit-api.onrender.com](https://a2transit-api.onrender.com/docs), across
+four free tiers with no card on any of them:
+
+| Tier | Service | What it costs |
+|---|---|---|
+| Frontend | Vercel | free, CDN, always on |
+| API + poller | Render | free, sleeps after 15 min idle |
+| Postgres + PostGIS | Neon | free, no expiry |
+| Redis | Upstash | free |
+
+Three things that only showed up once it was actually deployed, all fixed here:
+
+- **`$PORT`.** Render assigns the port. Hardcoding 8000 works — the platform
+  finds the open port eventually — but costs a network reconfigure and restart
+  on every deploy. The `CMD` is `sh -c` for variable expansion and `exec` inside
+  it so uvicorn stays PID 1; without the `exec`, `sh` swallows SIGTERM and the
+  container is SIGKILLed after the grace period instead of shutting the inline
+  poller down cleanly. Verified: stops in 1 s, not 10.
+- **Memory.** 512 MB, and the cache defaults to four service dates *per engine* —
+  and `?engine=dijkstra` is public, so a visitor can ask for the expensive one.
+  `TIMETABLE_CACHE_SIZE=2` on Render.
+- **Blueprint env vars.** The three `sync: false` values must be entered when the
+  Blueprint is applied. Miss them and the app falls back to the localhost
+  defaults in `config.py`, `/ready` 503s against a database that is not there,
+  and the deploy fails a health check for fifteen minutes before giving up.
 
 Everything needed is committed: `backend/Dockerfile`, `fly.toml`, `render.yaml`
 and `frontend/vercel.json`. What is *not* committed is any account — creating

@@ -35,7 +35,17 @@ USER a2transit
 
 EXPOSE 8000
 
-# One worker by default. The timetable cache is per-process and a service date
-# costs ~120 MB resident, so four workers is four copies of the same tables.
-# Scale with instances, not workers.
-CMD ["uvicorn", "a2transit.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One worker by default. The timetable cache is per-process, so four workers is
+# four copies of the same tables — scale with instances, not workers, and see
+# TIMETABLE_CACHE_SIZE for sizing a small one.
+#
+# $PORT because Render (and Heroku, and Cloud Run) assign the port and expect
+# the process to bind it. Hardcoding 8000 works — the platform detects the open
+# port eventually — but costs a network-reconfigure and restart on every deploy.
+#
+# `sh -c` because exec-form CMD does no variable expansion, and `exec` inside it
+# because without it `sh` stays PID 1 and swallows SIGTERM: the container would
+# be SIGKILLed after the grace period instead of shutting down cleanly, and the
+# inline poller's shutdown — which cancels its task and waits for the current
+# cycle to finish rather than dying mid-write to Redis — would never run.
+CMD ["sh", "-c", "exec uvicorn a2transit.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
