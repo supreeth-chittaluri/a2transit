@@ -1,0 +1,164 @@
+/**
+ * Design tokens. The only file that names a raw colour or a raw pixel value.
+ *
+ * Light is the default and dark is applied by media query, because the map is
+ * the canvas and OpenFreeMap's Liberty style is a light basemap — a dark panel
+ * floating over pale streets is the legible combination, not a dark map.
+ *
+ * Two constraints shape the palette:
+ *
+ *   * The agencies own two of the colours. TheRide's red and Michigan's navy
+ *     are used consistently on legs, markers and route lines, so a rider learns
+ *     "red means the city bus" once and it holds everywhere. They are brand
+ *     facts, not choices, which is why the accent is a third colour rather than
+ *     one of them — an accent that matched TheRide's red would make every
+ *     focus ring look like a route.
+ *   * Michigan navy is nearly black. On a dark surface it fails contrast
+ *     against the panel, so each brand colour carries a `-on-dark` variant that
+ *     keeps the hue and lifts the lightness.
+ */
+
+:root {
+  /* ---------------------------------------------------------- neutrals */
+  --n-0: #ffffff;
+  --n-25: #fcfcfd;
+  --n-50: #f7f8fa;
+  --n-100: #eef0f4;
+  --n-200: #e2e5eb;
+  --n-300: #cbd0da;
+  --n-400: #9aa2b1;
+  --n-500: #6b7382;
+  --n-600: #4d5462;
+  --n-700: #363c47;
+  --n-800: #23272f;
+  --n-900: #14171c;
+  --n-950: #0c0e12;
+
+  /* ------------------------------------------------------------ brand */
+  --theride: #c8102e;
+  --theride-on-dark: #ff5c73;
+  --mbus: #00274c;
+  --mbus-on-dark: #6ba4e8;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff4ff;
+
+  --ok: #15803d;
+  --warn: #b45309;
+  --danger: #b91c1c;
+  --ok-soft: #ecfdf3;
+  --warn-soft: #fffaeb;
+  --danger-soft: #fef3f2;
+
+  /* --------------------------------------------------------- surfaces */
+  --bg: var(--n-50);
+  --surface: var(--n-0);
+  --surface-2: var(--n-50);
+  --surface-3: var(--n-100);
+  --border: var(--n-200);
+  --border-strong: var(--n-300);
+
+  --text: var(--n-900);
+  --text-muted: var(--n-500);
+  --text-subtle: var(--n-400);
+  --text-inverse: var(--n-0);
+
+  /* Panel floats over the map, so it needs to be opaque enough to read
+     against arbitrary cartography underneath. */
+  --panel-bg: rgb(255 255 255 / 97%);
+  --scrim: rgb(12 14 18 / 45%);
+
+  /* ------------------------------------------------------------- type */
+  --font-sans:
+    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* Six steps. Anything not on this scale is a mistake. */
+  --text-2xs: 0.6875rem; /* 11px — meta, badges */
+  --text-xs: 0.75rem; /* 12px — secondary detail */
+  --text-sm: 0.8125rem; /* 13px — body of dense lists */
+  --text-base: 0.9375rem; /* 15px — default */
+  --text-lg: 1.125rem; /* 18px — card headline */
+  --text-xl: 1.5rem; /* 24px — the number that matters */
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---------------------------------------------------------- spacing */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.25rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-10: 2.5rem;
+
+  /* ----------------------------------------------------------- radius */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  /* -------------------------------------------------------- elevation */
+  --e-1: 0 1px 2px rgb(16 24 40 / 6%);
+  --e-2: 0 2px 8px rgb(16 24 40 / 8%), 0 1px 2px rgb(16 24 40 / 5%);
+  --e-3: 0 8px 24px rgb(16 24 40 / 12%), 0 2px 6px rgb(16 24 40 / 6%);
+  --e-4: 0 16px 48px rgb(16 24 40 / 18%), 0 4px 12px rgb(16 24 40 / 8%);
+
+  /* ----------------------------------------------------------- motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+
+  /* ------------------------------------------------------------ layout */
+  --rail-width: 400px;
+  --topbar-height: 52px;
+  --sheet-peek: 132px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --theride: var(--theride-on-dark);
+    --mbus: var(--mbus-on-dark);
+
+    --accent: #6b9cff;
+    --accent-hover: #8bb2ff;
+    --accent-soft: rgb(107 156 255 / 14%);
+
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --ok-soft: rgb(74 222 128 / 12%);
+    --warn-soft: rgb(251 191 36 / 12%);
+    --danger-soft: rgb(248 113 113 / 12%);
+
+    --bg: var(--n-950);
+    --surface: var(--n-900);
+    --surface-2: var(--n-800);
+    --surface-3: var(--n-700);
+    --border: rgb(255 255 255 / 10%);
+    --border-strong: rgb(255 255 255 / 18%);
+
+    --text: #f2f4f7;
+    --text-muted: #9aa2b1;
+    --text-subtle: #6b7382;
+    --text-inverse: var(--n-950);
+
+    --panel-bg: rgb(20 23 28 / 97%);
+    --scrim: rgb(0 0 0 / 55%);
+
+    --e-1: 0 1px 2px rgb(0 0 0 / 40%);
+    --e-2: 0 2px 8px rgb(0 0 0 / 45%);
+    --e-3: 0 8px 24px rgb(0 0 0 / 50%);
+    --e-4: 0 16px 48px rgb(0 0 0 / 60%);
+  }
+}

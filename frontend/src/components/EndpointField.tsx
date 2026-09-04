@@ -7,9 +7,10 @@ import type { Endpoint } from "../lib/endpoints";
 interface Props {
   label: string;
   placeholder: string;
+  kind: "origin" | "destination";
   value: Endpoint | null;
   onChange: (endpoint: Endpoint | null) => void;
-  /** Whether this field's suggestion list is the one showing. */
+  /** Only one field's list may be open; the parent owns which. */
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -33,34 +34,27 @@ const MIN_QUERY = 2;
  * asking someone to declare which kind of thing they are about to type is the
  * sort of interface that only makes sense to whoever built it.
  *
- * The geocoder is the slower and more rate-limited of the two, so stops render
- * as soon as they arrive rather than waiting for the address.
+ * Three details exist because the two lookups finish at different times, and
+ * all three were bugs first:
  *
- * Which field is showing its list is the parent's state, not this component's.
- * Two lists are absolutely positioned at the same depth, so if both were open
- * the upper one would cover the lower one's options — clicks landing on a list
- * belonging to a field the rider is not using.
- *
- * Two details exist because the two lookups finish at different times:
- *
- *   * The address goes at the *bottom*. Inserting it at the top when it arrives
- *     pushes every stop down by a row, and a rider who was about to click the
- *     second stop clicks the third instead.
+ *   * Only one field's list is open at a time. They are absolutely positioned
+ *     at the same depth, so two open lists meant the upper one covered the
+ *     lower one's options.
+ *   * The address goes at the bottom. Inserting it at the top when it arrived
+ *     pushed every stop down a row just as someone was about to click one.
  *   * The list closes on a click outside it, never on blur and never on
- *     pointerdown. Both of those land before the row's own handler and unmount
- *     the button mid-press, so the rider sees the list react and nothing get
- *     chosen.
+ *     pointerdown — both land before the row's own handler and unmount the
+ *     button mid-press, so the list visibly reacted and nothing got chosen.
  *
- * Keyboard: arrows move the highlight, Enter takes it, Escape closes without
- * choosing. Wired by hand rather than left to the browser because a `<datalist>`
- * cannot show a second line per row, and a stop's routes are what tell three
- * identically-named ones apart. The ARIA combobox roles are what make that
- * legible to a screen reader — a `<ul>` of buttons announces as a list of
- * buttons, which is true and useless.
+ * Keyboard: arrows move the highlight, Enter takes it, Escape closes. Hand-
+ * rolled rather than a `<datalist>` because a stop's routes have to appear on a
+ * second line — they are what tell three identically-named stops apart — and
+ * the ARIA combobox roles are what make that legible to a screen reader.
  */
 export function EndpointField({
   label,
   placeholder,
+  kind,
   value,
   onChange,
   isOpen,
@@ -82,6 +76,7 @@ export function EndpointField({
   useEffect(() => {
     if (!isOpen || query.trim().length < MIN_QUERY || query === value?.label) {
       setSuggestions(EMPTY);
+      setLoading(false);
       return;
     }
 
@@ -89,6 +84,11 @@ export function EndpointField({
     const timer = window.setTimeout(() => {
       setLoading(true);
       const text = query.trim();
+      let settled = 0;
+      const done = () => {
+        settled += 1;
+        if (settled === 2 && !controller.signal.aborted) setLoading(false);
+      };
 
       searchStops(text, controller.signal)
         .then((results) =>
@@ -111,7 +111,8 @@ export function EndpointField({
             ...current,
             error: error instanceof ApiError ? error.message : "Stop search failed",
           }));
-        });
+        })
+        .finally(done);
 
       geocode(text, controller.signal)
         .then((result) =>
@@ -128,9 +129,7 @@ export function EndpointField({
         // A geocoder finding nothing is the ordinary case for a stop name, not
         // an error worth showing.
         .catch(() => setSuggestions((current) => ({ ...current, address: null })))
-        .finally(() => {
-          if (!controller.signal.aborted) setLoading(false);
-        });
+        .finally(done);
     }, DEBOUNCE_MS);
 
     return () => {
@@ -139,12 +138,6 @@ export function EndpointField({
     };
   }, [query, isOpen, value?.label]);
 
-  // Clicking the map, or anywhere outside, should close the list.
-  //
-  // On click rather than pointerdown. Pointerdown fires *before* the row's own
-  // handler, so closing there unmounts the button the rider is in the middle of
-  // pressing and the click never arrives — the list visibly reacts and nothing
-  // gets selected.
   useEffect(() => {
     if (!isOpen) return;
     const onDocumentClick = (event: MouseEvent) => {
@@ -161,9 +154,6 @@ export function EndpointField({
     setHighlighted(-1);
   };
 
-  // One ordered list, so arrow keys and clicks traverse the same thing. The
-  // address is last: it arrives after the stops and inserting it at the top
-  // would move every row out from under the cursor.
   const options: Endpoint[] = [
     ...suggestions.stops,
     ...(suggestions.address ? [suggestions.address] : []),
@@ -171,7 +161,7 @@ export function EndpointField({
   const hasSuggestions = options.length > 0;
 
   // A highlight left pointing at row 7 of a list that now has two would be
-  // invisible and would make Enter choose nothing.
+  // invisible, and Enter would choose nothing.
   useEffect(() => {
     setHighlighted((current) => (current >= options.length ? -1 : current));
   }, [options.length]);
@@ -192,7 +182,7 @@ export function EndpointField({
       setHighlighted((current) => {
         const next = current + step;
         // Wrapping rather than clamping: at the end of a short list, one more
-        // Down is much more likely to mean "start again" than "do nothing".
+        // Down much more likely means "start again" than "do nothing".
         if (next < 0) return options.length - 1;
         if (next >= options.length) return 0;
         return next;
@@ -205,19 +195,23 @@ export function EndpointField({
     }
   };
 
+  const showList = isOpen && query.trim().length >= MIN_QUERY;
+
   return (
-    <div className="field" ref={container}>
+    <div className={`field${value ? " field--chosen" : ""}`} ref={container}>
       <label className="field__label" htmlFor={fieldId}>
         {label}
       </label>
+
       <div className="field__control">
+        <span className={`field__marker field__marker--${kind}`} aria-hidden />
         <input
           id={fieldId}
           className="field__input"
           type="text"
           autoComplete="off"
           role="combobox"
-          aria-expanded={isOpen && hasSuggestions}
+          aria-expanded={showList && hasSuggestions}
           aria-controls={listId}
           aria-autocomplete="list"
           aria-activedescendant={
@@ -235,24 +229,27 @@ export function EndpointField({
           }}
           onFocus={() => onOpenChange(true)}
         />
-        {query && (
-          <button
-            className="field__clear"
-            type="button"
-            aria-label={`Clear ${label.toLowerCase()}`}
-            onClick={() => {
-              setQuery("");
-              onChange(null);
-              onOpenChange(false);
-            }}
-          >
-            ×
-          </button>
-        )}
+        <span className="field__affordance">
+          {loading && <span className="spinner" aria-hidden />}
+          {!loading && query && (
+            <button
+              type="button"
+              className="field__clear"
+              aria-label={`Clear ${label.toLowerCase()}`}
+              onClick={() => {
+                setQuery("");
+                onChange(null);
+                onOpenChange(false);
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </span>
       </div>
 
-      {isOpen && query.trim().length >= MIN_QUERY && (
-        <ul className="suggestions" id={listId} role="listbox" aria-label={`${label} results`}>
+      {showList && (
+        <ul className="suggestions scroll-y" id={listId} role="listbox" aria-label={`${label} results`}>
           {options.map((option, index) => (
             <li key={option.id ?? `place-${index}`} role="presentation">
               <button
@@ -260,28 +257,37 @@ export function EndpointField({
                 id={`${listId}-option-${index}`}
                 role="option"
                 aria-selected={index === highlighted}
-                className={
-                  "suggestion" +
-                  (option.kind === "place" ? " suggestion--address" : "") +
-                  (index === highlighted ? " suggestion--active" : "")
-                }
+                className={`suggestion${index === highlighted ? " suggestion--active" : ""}`}
                 onMouseEnter={() => setHighlighted(index)}
                 onClick={() => choose(option)}
               >
-                <span className="suggestion__name">{option.label}</span>
-                <span className="suggestion__meta">
-                  {option.kind === "place"
-                    ? "address"
-                    : option.routes?.length
-                      ? option.routes.slice(0, 4).join(" · ")
-                      : option.id?.split(":")[0]}
+                <span className="suggestion__icon" aria-hidden>
+                  {option.kind === "place" ? "⌖" : "⬤"}
+                </span>
+                <span className="suggestion__text">
+                  <span className="suggestion__name">{option.label}</span>
+                  <span className="suggestion__meta">
+                    {option.kind === "place"
+                      ? "Address"
+                      : option.routes?.length
+                        ? option.routes.slice(0, 5).join(" · ")
+                        : option.id?.split(":")[0]}
+                  </span>
                 </span>
               </button>
             </li>
           ))}
+
           {!hasSuggestions && (
             <li className="suggestions__empty" role="presentation">
-              {loading ? "Searching…" : (suggestions.error ?? "Nothing found")}
+              {loading ? (
+                <>
+                  <span className="spinner" aria-hidden />
+                  Searching…
+                </>
+              ) : (
+                (suggestions.error ?? "Nothing found")
+              )}
             </li>
           )}
         </ul>

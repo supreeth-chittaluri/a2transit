@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDuration, legColor, toLocalIso, toQueryValue } from "../endpoints";
+import { legColor } from "../agency";
+import { formatDuration, toLocalIso, toQueryValue } from "../endpoints";
 
 describe("toQueryValue", () => {
   it("sends a stop as its composite id", () => {
@@ -48,7 +49,18 @@ describe("legColor", () => {
   });
 
   it("falls back to an agency colour rather than a default grey", () => {
+    // jsdom has no stylesheet, so this exercises AGENCY_FALLBACK — which is
+    // exactly the path that must not return a neutral.
     expect(legColor(null, "mbus")).toBe("#00274c");
     expect(legColor(null, "theride")).toBe("#c8102e");
+  });
+
+  it("normalises a feed colour that omits the hash", () => {
+    // GTFS route_color is published without one; MapLibre and CSS both need it.
+    expect(legColor("00274c", "theride")).toBe("#00274c");
+  });
+
+  it("treats an unknown agency as TheRide rather than crashing", () => {
+    expect(legColor(null, undefined)).toBe("#c8102e");
   });
 });

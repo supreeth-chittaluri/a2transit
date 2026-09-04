@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { departures, type Departure } from "../lib/api";
-import { formatClock, legColor } from "../lib/endpoints";
+import { legColor } from "../lib/agency";
+import { formatClock } from "../lib/endpoints";
 
 interface Props {
   stopId: string;
@@ -15,7 +16,7 @@ function countdown(seconds: number): string {
   const minutes = Math.round(seconds / 60);
   if (minutes <= 0) return "due";
   if (minutes < 60) return `${minutes} min`;
-  return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")}`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}`;
 }
 
 export function DepartureBoard({ stopId, stopName, at, onClose }: Props) {
@@ -38,25 +39,38 @@ export function DepartureBoard({ stopId, stopName, at, onClose }: Props) {
     <section className="board" aria-label={`Departures from ${stopName}`}>
       <header className="board__header">
         <h2 className="board__title">{stopName}</h2>
-        <button type="button" className="board__close" onClick={onClose} aria-label="Close">
-          ×
+        <button type="button" className="board__close" onClick={onClose} aria-label="Close departures">
+          ✕
         </button>
       </header>
 
-      {state.kind === "loading" && <p className="panel__placeholder">Loading departures…</p>}
+      {state.kind === "loading" && (
+        <div style={{ padding: "var(--sp-3)", display: "grid", gap: "var(--sp-2)" }} aria-busy="true">
+          {[0, 1, 2, 3].map((i) => (
+            <div className="skeleton" key={i} style={{ height: 20 }} />
+          ))}
+        </div>
+      )}
+
       {state.kind === "error" && (
-        <p className="panel__error">Could not load departures for this stop.</p>
+        <p className="state__body" style={{ padding: "var(--sp-3)" }}>
+          Could not load departures for this stop.
+        </p>
       )}
+
       {state.kind === "ready" && state.rows.length === 0 && (
-        <p className="panel__placeholder">Nothing more leaves this stop today.</p>
+        <p className="state__body" style={{ padding: "var(--sp-3)" }}>
+          Nothing more leaves this stop today.
+        </p>
       )}
+
       {state.kind === "ready" && state.rows.length > 0 && (
-        <ol className="board__rows">
+        <ol className="board__rows scroll-y">
           {state.rows.map((row) => (
             <li key={`${row.tripId}-${row.departure}`} className="board__row">
               <span
                 className="route-badge"
-                style={{ background: legColor(row.routeColor, row.agency) }}
+                style={{ "--badge-bg": legColor(row.routeColor, row.agency) } as React.CSSProperties}
               >
                 {row.routeLabel}
               </span>

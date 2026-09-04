@@ -44,9 +44,3 @@ export function formatDuration(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   return `${hours} h ${String(minutes % 60).padStart(2, "0")}`;
 }
-
-/** Colour for a leg's line and badge. Agency colours where the feed gives none. */
-export function legColor(routeColor: string | null | undefined, agency: string | null | undefined): string {
-  if (routeColor) return routeColor;
-  return agency === "mbus" ? "#00274c" : "#c8102e";
-}

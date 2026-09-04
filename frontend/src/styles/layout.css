@@ -1,0 +1,197 @@
+/**
+ * The map is the canvas; everything else floats over it.
+ *
+ * Desktop is a fixed rail on the left. Mobile is a bottom sheet the rider can
+ * drag between three snap points, because on a phone the map and the itinerary
+ * compete for the same space and only they know which one they need right now.
+ */
+
+.app {
+  position: relative;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* The map fills the viewport including behind the top bar, so the bar reads as
+   a control floating over the city rather than as a header the map hangs off. */
+.map-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+/* ------------------------------------------------------------- top bar */
+
+.topbar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: var(--topbar-height);
+  padding: 0 var(--sp-4);
+  padding-top: env(safe-area-inset-top);
+  height: calc(var(--topbar-height) + env(safe-area-inset-top));
+  background: var(--panel-bg);
+  backdrop-filter: saturate(1.6) blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.wordmark__name {
+  font-size: var(--text-base);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.015em;
+}
+
+.wordmark__tagline {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar__end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ---------------------------------------------------------------- panel */
+
+.panel {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  backdrop-filter: saturate(1.6) blur(12px);
+}
+
+/* Desktop: a rail under the top bar, full height, its own scroll. */
+@media (min-width: 861px) {
+  .panel {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top));
+    left: 0;
+    bottom: 0;
+    width: var(--rail-width);
+    border-right: 1px solid var(--border);
+    box-shadow: var(--e-3);
+  }
+
+  .panel__grabber {
+    display: none;
+  }
+
+  /* Keep the map's own controls clear of the rail. */
+  .map-canvas .maplibregl-ctrl-top-right {
+    top: calc(var(--topbar-height) + var(--sp-2));
+  }
+}
+
+/* Mobile: a bottom sheet. Height is driven by --sheet-height, which the drag
+   handler writes; the transition is disabled mid-drag so the sheet tracks the
+   finger exactly and only animates when it snaps. */
+@media (max-width: 860px) {
+  .panel {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: var(--sheet-height, var(--sheet-peek));
+    max-height: calc(100dvh - var(--topbar-height) - var(--sp-6));
+    border-top: 1px solid var(--border);
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    box-shadow: var(--e-4);
+    transition: height var(--dur-slow) var(--ease);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .panel--dragging {
+    transition: none;
+  }
+
+  .panel__grabber {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    height: 26px;
+    /* The whole strip is the drag target, not just the visible pill — a 4px
+       tall handle is not a touch target. */
+    touch-action: none;
+    cursor: grab;
+    background: none;
+    border: 0;
+    width: 100%;
+    padding: 0;
+  }
+
+  .panel__grabber::before {
+    content: "";
+    width: 40px;
+    height: 4px;
+    border-radius: var(--r-full);
+    background: var(--border-strong);
+  }
+
+  .panel--dragging .panel__grabber {
+    cursor: grabbing;
+  }
+}
+
+.panel__body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--sp-4);
+  padding-top: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.panel__scroll {
+  flex: 1;
+  min-height: 0;
+  margin: 0 calc(var(--sp-4) * -1);
+  padding: 0 var(--sp-4);
+  display: flex;
+  flex-direction: column;
+}
+
+/* An empty state is the only thing on screen when it shows, so it centres in
+   the space rather than clinging to the top of a tall blank rail. */
+.panel__scroll > .state,
+.panel__scroll > [class*="state"] > .state {
+  flex: 1;
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------- footer */
+
+.attribution {
+  flex: none;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border);
+  color: var(--text-subtle);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+}
+
+/* ------------------------------------------------- section scaffolding */
+
+.section-label {
+  display: block;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}

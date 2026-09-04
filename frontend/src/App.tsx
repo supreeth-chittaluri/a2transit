@@ -5,11 +5,22 @@ import { AlertBanner } from "./components/AlertBanner";
 import { DepartureBoard } from "./components/DepartureBoard";
 import { EndpointField } from "./components/EndpointField";
 import { ItineraryList } from "./components/ItineraryList";
-import { TransitMap } from "./TransitMap";
-import { ApiError, planTrip, type PlanResponse } from "./lib/api";
+import { Panel } from "./components/Panel";
+import { StatusPill } from "./components/StatusPill";
+import { TopBar } from "./components/TopBar";
+import {
+  ErrorState,
+  IdleState,
+  NoResultsState,
+  ResultsSkeleton,
+  WakingState,
+} from "./components/states";
+import { useIsMobile } from "./hooks/useIsMobile";
+import { useTripPlan } from "./hooks/useTripPlan";
 import { toLocalIso, toQueryValue, type Endpoint } from "./lib/endpoints";
 import { readTripFromUrl, writeTripToUrl } from "./lib/tripUrl";
 import { useVehicles } from "./lib/useVehicles";
+import { TransitMap } from "./map/TransitMap";
 import { useApiHealth } from "./useApiHealth";
 
 /**
@@ -28,46 +39,10 @@ function clampToFeedWindow(iso: string): string {
 
 const nowInWindow = () => clampToFeedWindow(toLocalIso(new Date()));
 
-function ApiStatus({ vehicleCount, live }: { vehicleCount: number; live: boolean }) {
-  const health = useApiHealth();
-
-  if (health.state === "checking") {
-    return <span className="status status--pending">checking API…</span>;
-  }
-  if (health.state === "waking") {
-    // The free tier sleeps after fifteen minutes idle. Saying so beats a red
-    // "unreachable" that makes a working planner look broken to whoever just
-    // opened the link.
-    return (
-      <span className="status status--pending" aria-live="polite">
-        ◌ waking the server… {health.seconds}s
-      </span>
-    );
-  }
-  if (health.state === "down") {
-    return <span className="status status--down">API unreachable ({health.reason})</span>;
-  }
-  // Connected but with nothing to show is not "live". It means the poller is
-  // not running, or every bus is in the depot — either way, claiming
-  // "0 buses live" next to a green dot says the opposite of what is true.
-  const reporting = live && vehicleCount > 0;
-  return (
-    <span className="status">
-      {/* Realtime being off is a normal state, not a fault: the planner works
-          from the schedule and says so rather than pretending. */}
-      <span className={reporting ? "status--up" : "status--pending"}>
-        {reporting ? `● ${vehicleCount} buses live` : "○ schedule only"}
-      </span>
-      <span className="status__version">API v{health.version}</span>
-    </span>
-  );
-}
-
-type PlanState =
-  | { state: "idle" }
-  | { state: "loading" }
-  | { state: "done"; response: PlanResponse }
-  | { state: "error"; message: string };
+/** Matches --rail-width in tokens.css; the map insets its fit by this much. */
+const RAIL_WIDTH = 400;
+/** The sheet's mid snap point, so a fitted route clears it on a phone. */
+const SHEET_FRACTION = 0.55;
 
 export default function App() {
   // Seeded from the URL, so a shared link opens the trip it describes.
@@ -77,12 +52,42 @@ export default function App() {
   const [depart, setDepart] = useState(() =>
     initial.depart ? clampToFeedWindow(initial.depart) : nowInWindow(),
   );
-  const [plan, setPlan] = useState<PlanState>({ state: "idle" });
-  const [selected, setSelected] = useState(0);
   const [openField, setOpenField] = useState<"origin" | "destination" | null>(null);
+  const [selected, setSelected] = useState(0);
   const [board, setBoard] = useState<{ id: string; name: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  const isMobile = useIsMobile();
+  const health = useApiHealth();
   const feed = useVehicles();
+  const plan = useTripPlan(
+    origin ? toQueryValue(origin) : null,
+    destination ? toQueryValue(destination) : null,
+    depart,
+  );
+
+  useEffect(() => {
+    writeTripToUrl({ origin, destination, depart });
+  }, [origin, destination, depart]);
+
+  // A new answer means the previously selected index refers to a different
+  // journey, or to none.
+  useEffect(() => setSelected(0), [plan]);
+
+  // A link shared from the URL bar names a stop by id; the plan response names
+  // it properly, so the fields fill in once the answer arrives.
+  useEffect(() => {
+    if (plan.state !== "done") return;
+    const fill = (
+      current: Endpoint | null,
+      resolved: { name: string; lat: number; lon: number },
+    ) =>
+      current && current.kind === "stop" && current.label === current.id
+        ? { ...current, label: resolved.name, lat: resolved.lat, lon: resolved.lon }
+        : current;
+    setOrigin((c) => fill(c, plan.response.origin));
+    setDestination((c) => fill(c, plan.response.destination));
+  }, [plan]);
 
   // Picking on the map fills whichever end is still empty — destination first,
   // because an origin is usually typed and a destination is usually pointed at.
@@ -100,63 +105,6 @@ export default function App() {
     [origin, destination],
   );
 
-  useEffect(() => {
-    writeTripToUrl({ origin, destination, depart });
-  }, [origin, destination, depart]);
-
-  useEffect(() => {
-    if (!origin || !destination) {
-      setPlan({ state: "idle" });
-      return;
-    }
-
-    const controller = new AbortController();
-    setPlan({ state: "loading" });
-    setSelected(0);
-
-    planTrip(toQueryValue(origin), toQueryValue(destination), depart, controller.signal)
-      .then((response) => setPlan({ state: "done", response }))
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setPlan({
-          state: "error",
-          message:
-            error instanceof ApiError
-              ? error.message
-              : "Could not reach the planner — it may still be waking up. " +
-                "The free tier sleeps when idle; this usually clears in under a minute.",
-        });
-      });
-
-    return () => controller.abort();
-  }, [origin, destination, depart]);
-
-  // A link shared from the URL bar names a stop by id; the plan response names
-  // it properly, so the fields fill in once the answer arrives.
-  useEffect(() => {
-    if (plan.state !== "done") return;
-    setOrigin((current) =>
-      current && current.kind === "stop" && current.label === current.id
-        ? { ...current, label: plan.response.origin.name, lat: plan.response.origin.lat, lon: plan.response.origin.lon }
-        : current,
-    );
-    setDestination((current) =>
-      current && current.kind === "stop" && current.label === current.id
-        ? {
-            ...current,
-            label: plan.response.destination.name,
-            lat: plan.response.destination.lat,
-            lon: plan.response.destination.lon,
-          }
-        : current,
-    );
-  }, [plan]);
-
-  const swap = () => {
-    setOrigin(destination);
-    setDestination(origin);
-  };
-
   const share = async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
@@ -173,8 +121,8 @@ export default function App() {
   const routeIds = useMemo(
     () =>
       new Set(
-        itineraries.flatMap((itinerary) =>
-          itinerary.legs.map((leg) => leg.routeId).filter((id): id is string => Boolean(id)),
+        itineraries.flatMap((it) =>
+          it.legs.map((leg) => leg.routeId).filter((id): id is string => Boolean(id)),
         ),
       ),
     [itineraries],
@@ -182,58 +130,68 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="header">
-        <h1 className="header__title">a2transit</h1>
-        <p className="header__tagline">TheRide + U&#8209;M MBus, as one network</p>
-        <ApiStatus vehicleCount={feed.vehicles.length} live={feed.state === "live"} />
-      </header>
+      <TopBar>
+        <StatusPill
+          health={health}
+          vehicleCount={feed.vehicles.length}
+          vehiclesLive={feed.state === "live"}
+        />
+      </TopBar>
 
-      <main className="main">
-        <aside className="panel">
-          <form className="search" onSubmit={(event) => event.preventDefault()}>
+      <Panel expandSignal={itineraries.length}>
+        <div className="panel__body">
+          <form className="fields" onSubmit={(event) => event.preventDefault()}>
             <EndpointField
               label="From"
+              kind="origin"
               placeholder="Stop name or address"
               value={origin}
               onChange={setOrigin}
               isOpen={openField === "origin"}
               onOpenChange={(open) => setOpenField(open ? "origin" : null)}
             />
+
             <button
               type="button"
-              className="swap"
-              onClick={swap}
+              className="field__swap"
+              onClick={() => {
+                setOrigin(destination);
+                setDestination(origin);
+              }}
               disabled={!origin && !destination}
-              aria-label="Swap origin and destination"
-              title="Swap"
             >
-              ⇅
+              <span aria-hidden>⇅</span> Swap
             </button>
+
             <EndpointField
               label="To"
+              kind="destination"
               placeholder="Stop name or address"
               value={destination}
               onChange={setDestination}
               isOpen={openField === "destination"}
               onOpenChange={(open) => setOpenField(open ? "destination" : null)}
             />
+
             <div className="field">
               <label className="field__label" htmlFor="depart">
                 Leaving
               </label>
               <div className="field__row">
-                <input
-                  id="depart"
-                  className="field__input"
-                  type="datetime-local"
-                  value={depart}
-                  min={`${FEED_START}T00:00`}
-                  max={`${FEED_END}T23:59`}
-                  onChange={(event) => setDepart(event.target.value)}
-                />
+                <span className="field__control">
+                  <input
+                    id="depart"
+                    className="field__input"
+                    type="datetime-local"
+                    value={depart}
+                    min={`${FEED_START}T00:00`}
+                    max={`${FEED_END}T23:59`}
+                    onChange={(event) => setDepart(event.target.value)}
+                  />
+                </span>
                 <button
                   type="button"
-                  className="chip"
+                  className="chip-button"
                   onClick={() => setDepart(nowInWindow())}
                 >
                   Now
@@ -242,53 +200,45 @@ export default function App() {
             </div>
           </form>
 
-          <div className="results">
+          <div className="panel__scroll scroll-y">
             {board && (
-              <DepartureBoard
-                stopId={board.id}
-                stopName={board.name}
-                at={depart}
-                onClose={() => setBoard(null)}
-              />
+              <div style={{ marginBottom: "var(--sp-3)" }}>
+                <DepartureBoard
+                  stopId={board.id}
+                  stopName={board.name}
+                  at={depart}
+                  onClose={() => setBoard(null)}
+                />
+              </div>
             )}
 
-            <AlertBanner routeIds={routeIds} />
+            {/* Alerts are shown against a journey, not in the abstract. With
+                no plan on screen every one of the 23 the agencies publish is
+                "other", and a collapsed count of them is the first thing a
+                visitor would see — noise before they have asked anything. */}
+            {plan.state === "done" && <AlertBanner routeIds={routeIds} />}
 
-            {plan.state === "idle" && (
-              <p className="panel__placeholder">
-                Pick an origin and a destination — type a stop or an address, or click
-                the map. Journeys cross between the two agencies wherever their stops
-                are within a 400&nbsp;m walk, which neither agency's own planner will
-                do for you.
-              </p>
+            {/* Waking outranks idle: if the API is asleep, that is the thing
+                the rider needs to know, not an invitation to type. */}
+            {health.state === "waking" && plan.state !== "done" ? (
+              <WakingState seconds={health.seconds} />
+            ) : (
+              <>
+                {plan.state === "idle" && <IdleState />}
+                {plan.state === "loading" && <ResultsSkeleton />}
+                {plan.state === "error" && <ErrorState message={plan.message} />}
+                {plan.state === "done" && itineraries.length === 0 && <NoResultsState />}
+              </>
             )}
-            {plan.state === "loading" && (
-              <p className="panel__placeholder" aria-live="polite">
-                Planning…
-              </p>
-            )}
-            {plan.state === "error" && (
-              <p className="panel__error" role="alert">
-                {plan.message}
-              </p>
-            )}
-            {plan.state === "done" && itineraries.length === 0 && (
-              <p className="panel__placeholder">
-                Nothing runs between these two within six hours of that time. Service
-                is thin before 06:00 and after the last run, and thinner on Sundays —
-                try a different departure.
-              </p>
-            )}
-            {/* Only when live data actually changed something. A query for a
-                future date legitimately has predictions applied and nothing
-                adjusted, and "Live: 0 trips adjusted" is a claim about the
-                plumbing rather than about the rider's trip. */}
+
             {plan.state === "done" && plan.response.realtime.runsAdjusted > 0 && (
               <p className="realtime-note">
-                Live: {plan.response.realtime.runsAdjusted} trips adjusted, worst
-                delay {Math.round(plan.response.realtime.maxDelaySeconds / 60)} min.
+                <span className="status__dot" aria-hidden />
+                Live: {plan.response.realtime.runsAdjusted} trips adjusted, worst delay{" "}
+                {Math.round(plan.response.realtime.maxDelaySeconds / 60)} min
               </p>
             )}
+
             {plan.state === "done" && itineraries.length > 0 && (
               <>
                 <ItineraryList
@@ -299,18 +249,39 @@ export default function App() {
                   destinationLabel={destination?.label ?? ""}
                   onShowDepartures={(id, name) => setBoard({ id, name })}
                 />
-                <button type="button" className="share" onClick={share}>
-                  {copied ? "Link copied" : "Copy link to this trip"}
+                <button
+                  type="button"
+                  className="share"
+                  onClick={share}
+                  style={{ marginTop: "var(--sp-2)" }}
+                >
+                  {copied ? "✓ Link copied" : "Copy link to this trip"}
                 </button>
               </>
             )}
           </div>
-        </aside>
+        </div>
 
-        <TransitMap itinerary={shown} vehicles={feed.vehicles} onPick={pickOnMap} />
-      </main>
+        {/* TheRide's licence requires this be displayed prominently wherever
+            their data appears. See docs/licences.md. */}
+        <p className="attribution">{ATTRIBUTION}</p>
+      </Panel>
 
-      <footer className="footer">{ATTRIBUTION}</footer>
+      {/* Last in the DOM, painted underneath.
+          The map is the visual canvas but not the primary control, and the
+          canvas MapLibre renders is focusable — it is keyboard-pannable, which
+          is a real feature. First in the DOM meant the first Tab landed on the
+          map, and a keyboard user traversed the canvas, the zoom buttons, the
+          geolocate button and the attribution before reaching the search.
+          Stacking is unaffected: the panel and top bar carry positive z-index,
+          so they paint above regardless of order. */}
+      <TransitMap
+        itinerary={shown}
+        vehicles={feed.vehicles}
+        onPick={pickOnMap}
+        padLeft={isMobile ? 0 : RAIL_WIDTH}
+        padBottom={isMobile ? window.innerHeight * SHEET_FRACTION : 0}
+      />
     </div>
   );
 }
