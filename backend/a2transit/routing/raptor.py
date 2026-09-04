@@ -234,11 +234,27 @@ def run_raptor(
     # a single map would lose whichever wrote first.
     ready: list[dict[StopKey, int]] = [{} for _ in range(max_rounds + 1)]
 
-    # Earliest known arrival at each stop across all rounds, used only to prune.
-    best: dict[StopKey, int] = {}
+    # Two pruning bounds, because arriving by vehicle and arriving on foot are
+    # not interchangeable: only a vehicle arrival licenses walking onward.
+    #
+    #   best_ride[stop]  earliest arrival *by vehicle*. Vehicle arrivals are
+    #                    pruned against this and nothing else.
+    #   best_any[stop]   earliest arrival by any means. What the destination is
+    #                    measured on, and what bounds the search.
+    #
+    # Pruning a vehicle arrival against a foot arrival looks safe — it is
+    # earlier, by every measure a rider cares about — and is not. theride:134
+    # to theride:378 on a Saturday reached Green + Plymouth on foot at 15:51:21,
+    # which suppressed the bus that got there at 15:52; the journey needed the
+    # bus, because the last 380 m had to be walked and the rider had already
+    # spent their one walk. RAPTOR returned nothing where M2 found a 45-minute
+    # trip. Four of 500 differential cases, all on the same Saturday.
+    best_ride: dict[StopKey, int] = {}
+    best_any: dict[StopKey, int] = {}
     best_ready: dict[StopKey, int] = {origin: departure_time}
 
     arrivals[0][origin] = departure_time
+    best_any[origin] = departure_time
     ready[0][origin] = departure_time
     marked: set[StopKey] = {origin}
 
@@ -269,8 +285,8 @@ def run_raptor(
             marked.add(target)
         # Walking in is arriving, so a destination within walking distance of
         # the origin is answered in round 0, with no vehicle at all.
-        if landed < best.get(target, INFINITY):
-            best[target] = landed
+        if landed < best_any.get(target, INFINITY):
+            best_any[target] = landed
             arrivals[0][target] = landed
             walk_parents[0][target] = step
     patterns_scanned = 0
@@ -291,8 +307,13 @@ def run_raptor(
                     queue[pattern_index] = position
         marked = set()
 
-        target_bound = best.get(destination, INFINITY) if destination else INFINITY
+        target_bound = best_any.get(destination, INFINITY) if destination else INFINITY
         previous_ready = ready[round_index - 1]
+
+        # Vehicle arrivals made this round, which are the only stops a walk may
+        # start from. Collected as the scan runs rather than read back out of
+        # arrivals[], which also holds arrivals made on foot.
+        rode_in: dict[StopKey, int] = {}
 
         for pattern_index, start_position in queue.items():
             pattern: PatternTable = timetable.patterns[pattern_index]
@@ -307,10 +328,10 @@ def run_raptor(
 
                 if run is not None and pattern.can_alight[position]:
                     arrival = run.arrivals[position]
-                    # Prune against both this stop's best and the destination's:
-                    # a label that cannot beat the destination cannot extend to
-                    # anything that does.
-                    if arrival < min(best.get(stop, INFINITY), target_bound):
+                    # Prune against this stop's best *vehicle* arrival and the
+                    # destination's best of any kind: a label that cannot beat
+                    # the destination cannot extend to anything that does.
+                    if arrival < min(best_ride.get(stop, INFINITY), target_bound):
                         ride = RideStep(
                             pattern_id=pattern.pattern_id,
                             route_id=pattern.route_id,
@@ -323,9 +344,12 @@ def run_raptor(
                             depart=run.departures[board_position],
                             arrive=arrival,
                         )
-                        arrivals[round_index][stop] = arrival
+                        best_ride[stop] = arrival
                         ride_parents[round_index][stop] = ride
-                        best[stop] = arrival
+                        rode_in[stop] = arrival
+                        if arrival < best_any.get(stop, INFINITY):
+                            best_any[stop] = arrival
+                            arrivals[round_index][stop] = arrival
                         boardable = arrival + MIN_TRANSFER_SECONDS
                         if boardable < best_ready.get(stop, INFINITY):
                             ready[round_index][stop] = boardable
@@ -359,19 +383,13 @@ def run_raptor(
         # Footpaths settle inside the round that produced the arrival:
         # walking never adds a vehicle, so it must not consume a round.
         #
-        # Relaxed from a snapshot of the *vehicle* arrivals, taken before any
-        # walk is applied. Reading arrivals[] live instead means a stop whose
-        # label a walk has already improved becomes a walking source, so the
-        # rider walks twice — 800 m, in a round, silently, and only when the
-        # iteration order happens to visit the two stops that way round. It
+        # `rode_in` holds exactly the vehicle arrivals this round made, so a
+        # stop a walk has already improved cannot become a walking source. The
+        # rider would otherwise walk twice — 800 m, in one round, and only when
+        # the iteration order happened to visit the two stops that way round. It
         # produced journeys whose legs did not join up: a 13-minute walk between
         # two stops with no footpath between them.
-        ride_arrivals = [
-            (stop, arrivals[round_index][stop])
-            for stop in marked
-            if stop in ride_parents[round_index]
-        ]
-        for stop, arrival in ride_arrivals:
+        for stop, arrival in rode_in.items():
             for target, seconds in timetable.footpaths.get(stop, ()):
                 landed = arrival + MIN_TRANSFER_SECONDS + seconds
                 step = TransferStep(
@@ -390,8 +408,8 @@ def run_raptor(
                 # the two labels move independently: a stop can already have an
                 # earlier vehicle arrival and still become boardable sooner on
                 # foot, or the other way round.
-                if landed < best.get(target, INFINITY):
-                    best[target] = landed
+                if landed < best_any.get(target, INFINITY):
+                    best_any[target] = landed
                     arrivals[round_index][target] = landed
                     walk_parents[round_index][target] = step
 
