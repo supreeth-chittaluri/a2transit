@@ -59,7 +59,6 @@ function toGeoJson(itinerary: Itinerary): GeoJSON.FeatureCollection {
 export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
-  const ready = useRef(false);
   const endpointMarkers = useRef<maplibregl.Marker[]>([]);
   const vehicleMarkers = useRef<Map<string, maplibregl.Marker>>(new Map());
   const pick = useRef(onPick);
@@ -114,7 +113,6 @@ export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: 
         layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": ["get", "color"], "line-width": 5 },
       });
-      ready.current = true;
     });
 
     instance.on("click", (event) => {
@@ -135,7 +133,6 @@ export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: 
       observer.disconnect();
       instance.remove();
       map.current = null;
-      ready.current = false;
     };
   }, []);
 
@@ -206,8 +203,17 @@ export function TransitMap({ itinerary, vehicles, onPick, padLeft, padBottom }: 
       }
     };
 
-    if (ready.current) draw();
-    else instance.once("load", draw);
+    // Asking the map whether the source exists, rather than tracking a `ready`
+    // flag set in the load handler. The flag could disagree with reality — if
+    // anything in that handler threw before setting it, `load` had already
+    // fired, the one-shot listener never ran again, and the route silently
+    // never drew while everything else on the map worked. This cannot drift:
+    // the condition *is* the thing being depended on.
+    //
+    // `idle` rather than `load` for the retry, because idle fires repeatedly
+    // once the map settles, so a listener registered after load still fires.
+    if (instance.getSource(ROUTE_SOURCE)) draw();
+    else instance.once("idle", draw);
   }, [itinerary, padLeft, padBottom]);
 
   // -------------------------------------------------------------- vehicles
