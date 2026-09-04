@@ -34,6 +34,16 @@ function ApiStatus({ vehicleCount, live }: { vehicleCount: number; live: boolean
   if (health.state === "checking") {
     return <span className="status status--pending">checking API…</span>;
   }
+  if (health.state === "waking") {
+    // The free tier sleeps after fifteen minutes idle. Saying so beats a red
+    // "unreachable" that makes a working planner look broken to whoever just
+    // opened the link.
+    return (
+      <span className="status status--pending" aria-live="polite">
+        ◌ waking the server… {health.seconds}s
+      </span>
+    );
+  }
   if (health.state === "down") {
     return <span className="status status--down">API unreachable ({health.reason})</span>;
   }
@@ -113,7 +123,8 @@ export default function App() {
           message:
             error instanceof ApiError
               ? error.message
-              : "Could not reach the planner. Is the API running?",
+              : "Could not reach the planner — it may still be waking up. " +
+                "The free tier sleeps when idle; this usually clears in under a minute.",
         });
       });
 

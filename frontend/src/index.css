@@ -636,3 +636,7 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* The waking state is a normal free-tier condition, not a fault, so it gets
+   the pending colour rather than the error one. */
+.status--pending { font-variant-numeric: tabular-nums; }

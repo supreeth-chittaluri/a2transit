@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from a2transit import __version__
 from a2transit.api import health, places, plan, realtime, stops
 from a2transit.config import get_settings
+from a2transit.realtime.inline import lifespan
 
 # Displayed at /docs, and the attribution TheRide's data licence requires wherever
 # their data is surfaced. See docs/feeds.md.
@@ -25,6 +26,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
+        lifespan=lifespan,
         title="a2transit",
         version=__version__,
         summary="Door-to-door journey planning across Ann Arbor's two transit agencies.",

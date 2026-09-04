@@ -1,6 +1,18 @@
-# Render deployment, as an alternative to fly.toml. Both are committed because
-# free tiers change their terms and having the second one written down is
-# cheaper than rediscovering it.
+# Render Blueprint — the free-tier deployment.
+#
+#   Render dashboard → New → Blueprint → point it at this repository.
+#
+# Everything here fits on plans that need no credit card. The database and
+# Redis are deliberately *not* declared: Render's own free Postgres expires
+# after 30 days, which is no good for a link on a CV, and its free plan has no
+# Redis at all. Both come from elsewhere and arrive as environment variables:
+#
+#   DATABASE_URL   Neon    (free, no card, no expiry, PostGIS available)
+#   REDIS_URL      Upstash (free, no card)
+#
+# fly.toml is the same deployment for a host that has a worker tier. The two
+# differ in exactly one respect, and it is the interesting one — see below.
+
 services:
   - type: web
     name: a2transit-api
@@ -8,28 +20,28 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
+    region: ohio            # Nearest to Ann Arbor and to Neon's us-east-2.
     healthCheckPath: /ready
     envVars:
       - key: APP_ENV
         value: production
+
+      # The free plan has no worker, so the API polls the agency feeds itself.
+      # Safe here only because the image runs a single uvicorn worker: one
+      # poller per process is still one poller. Enabling this alongside a real
+      # worker, or with multiple uvicorn workers, means polling somebody else's
+      # unauthenticated endpoint several times over — see
+      # a2transit/realtime/inline.py, and note that fly.toml leaves it off
+      # because Fly runs the poller as its own process.
+      - key: REALTIME_INLINE_POLL
+        value: "true"
+
+      # Credentials, set in the dashboard rather than committed.
       - key: DATABASE_URL
-        sync: false          # set in the dashboard; it is a credential
+        sync: false
       - key: REDIS_URL
         sync: false
       - key: CORS_ORIGINS
-        sync: false
-
-  - type: worker
-    name: a2transit-poller
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    plan: free
-    dockerCommand: python -m a2transit.realtime
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: REDIS_URL
         sync: false
 
   - type: web

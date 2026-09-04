@@ -16,6 +16,11 @@ primary_region = "ord"          # Chicago: nearest region to Ann Arbor.
 [env]
   APP_ENV = "production"
   LOG_LEVEL = "INFO"
+  # Deliberately absent: REALTIME_INLINE_POLL. Fly has a worker tier and the
+  # [processes] block below runs the poller as its own process, which is the
+  # right shape — six feeds fetched once, by one consumer, whatever the API is
+  # doing. Setting it here as well would poll twice. render.yaml turns it on
+  # because Render's free plan has no worker to run.
 
 [http_service]
   internal_port = 8000

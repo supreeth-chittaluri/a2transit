@@ -34,6 +34,16 @@ class Settings(BaseSettings):
 
     realtime_poll_seconds: int = 20
 
+    #: Poll the agency feeds from inside the API process instead of a separate
+    #: worker. Off by default: a deployment that runs `python -m a2transit.realtime`
+    #: must not also poll per web process, and a host running more than one
+    #: uvicorn worker must never enable it — that is one poller per worker
+    #: hitting somebody else's unauthenticated endpoint N times over.
+    #:
+    #: Exists because Render's free plan has no worker tier. See
+    #: a2transit.realtime.inline.
+    realtime_inline_poll: bool = False
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

@@ -189,10 +189,12 @@ hand.
 | Frontend | Vercel or Cloudflare Pages | yes |
 
 ```bash
-# 1. Provision Postgres (with PostGIS) and Redis, then load the feeds into it:
-DATABASE_URL=postgresql+psycopg://... backend/.venv/bin/python -m a2transit.ingest
+# 1. Provision Postgres (with PostGIS) and Redis, then load the feeds into it.
+#    The ingest runs from your machine against the remote database — it is a
+#    one-off, and there is no reason to ship 345,160 rows through the API.
+DATABASE_URL='postgresql+psycopg://...' backend/.venv/bin/python -m a2transit.ingest
 
-# 2. API and poller
+# 2. API. Render reads render.yaml as a Blueprint; Fly reads fly.toml.
 fly launch --no-deploy
 fly secrets set DATABASE_URL=... REDIS_URL=... CORS_ORIGINS=https://your-frontend
 fly deploy
@@ -201,8 +203,41 @@ fly deploy
 VITE_API_BASE_URL=https://your-api npm --prefix frontend run build
 ```
 
-The image was built and run against a live database before being committed: it
-plans the cross-agency Blake→Central Campus trip from inside the container.
+The image is built and run against a live database before every deploy-affecting
+change: it plans the cross-agency Blake→Central Campus trip from inside the
+container, with the production environment set.
+
+### Two hosts, one difference that matters
+
+`fly.toml` runs the realtime poller as its own process, which is the right shape
+— six feeds fetched once, by one consumer, whatever the API is doing.
+
+Render's free plan has no worker tier, so `render.yaml` sets
+`REALTIME_INLINE_POLL=true` and the API polls for itself. That is safe here only
+because the image runs a single uvicorn worker, for reasons that predate it: the
+timetable cache is per-process and a service date is ~120 MB resident. One
+poller per process is still one poller. Enabling it *alongside* a real worker,
+or under multiple uvicorn workers, would multiply the request rate at two
+unauthenticated endpoints neither agency has promised us anything about — which
+is why it is an explicit setting and not a guess about the environment.
+
+It also turns out to suit a tier that sleeps. A separate poller keeping a
+sleeping API's data warm around the clock is work nobody benefits from; the
+snapshot has expired by the time a visitor arrives. Polling in-process fetches
+the feeds exactly when somebody is looking.
+
+### The free tier sleeps, and the UI says so
+
+A Render free service spins down after fifteen minutes idle, and the request
+that wakes it can take most of a minute. The frontend treats a first failure as
+*probably asleep* rather than *down*: it retries with a rising delay for 75
+seconds, and the header reads `◌ waking the server… 12s` instead of a red
+`API unreachable`. It flips to live the moment the container answers, with no
+reload.
+
+Which matters more than it sounds, because the first person to open a link
+somebody sent them is exactly the person who must not see a planner that looks
+broken.
 
 Three things about the deployment that are load-bearing rather than incidental:
 
