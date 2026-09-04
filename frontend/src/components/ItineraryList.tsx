@@ -8,11 +8,20 @@ interface Props {
   queryMs: number;
   /** What the rider called the destination; the API only has its coordinates. */
   destinationLabel: string;
+  onShowDepartures: (stopId: string, stopName: string) => void;
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-function LegRow({ leg, toLabel }: { leg: Leg; toLabel?: string }) {
+function LegRow({
+  leg,
+  toLabel,
+  onShowDepartures,
+}: {
+  leg: Leg;
+  toLabel?: string;
+  onShowDepartures?: (stopId: string, stopName: string) => void;
+}) {
   if (leg.kind === "walk") {
     const isSameStop = leg.fromStop.name === leg.toStop.name;
     return (
@@ -39,7 +48,20 @@ function LegRow({ leg, toLabel }: { leg: Leg; toLabel?: string }) {
           <span className="route-badge" style={{ background: color }}>
             {leg.routeLabel}
           </span>
-          <span className="leg__from">{leg.fromStop.name}</span>
+          {/* The boarding stop opens its departure board: the question a rider
+              standing at a stop actually has is "what else comes past here". */}
+          {leg.fromStop.id && onShowDepartures ? (
+            <button
+              type="button"
+              className="leg__from leg__from--button"
+              onClick={() => onShowDepartures(leg.fromStop.id!, leg.fromStop.name)}
+              title="Departures from this stop"
+            >
+              {leg.fromStop.name}
+            </button>
+          ) : (
+            <span className="leg__from">{leg.fromStop.name}</span>
+          )}
         </span>
         <span className="leg__detail">
           {leg.headsign ? `towards ${leg.headsign} · ` : ""}
@@ -59,6 +81,7 @@ export function ItineraryList({
   onSelect,
   queryMs,
   destinationLabel,
+  onShowDepartures,
 }: Props) {
   return (
     <div className="itineraries">
@@ -115,6 +138,7 @@ export function ItineraryList({
                   <LegRow
                     key={legIndex}
                     leg={leg}
+                    onShowDepartures={onShowDepartures}
                     // A place has no name in the feed, so the API can only
                     // echo back the coordinates it was given. The browser is
                     // the only party that knows what the rider typed.

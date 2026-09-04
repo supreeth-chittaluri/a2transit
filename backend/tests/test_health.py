@@ -37,9 +37,15 @@ def test_ready_reports_ready_when_both_dependencies_answer(
     assert body["checks"]["redis"]["status"] == "ok"
 
 
-def test_ready_returns_503_and_names_the_failing_dependency(
+def test_losing_redis_is_degraded_but_still_serving(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Realtime is an enhancement, so its absence must not empty the pool.
+
+    M7 made this concrete: predictions expire and planning falls back to the
+    schedule on its own. A 503 here would pull a working planner out of the
+    load balancer because a feature it is designed to work without went away.
+    """
     monkeypatch.setattr(health, "_check_database", lambda: DependencyCheck(status="ok"))
     monkeypatch.setattr(
         health,
@@ -49,17 +55,34 @@ def test_ready_returns_503_and_names_the_failing_dependency(
 
     response = client.get("/ready")
 
-    assert response.status_code == 503
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "degraded"
-    assert body["checks"]["database"]["status"] == "ok"
     assert body["checks"]["redis"] == {"status": "unavailable", "detail": "Connection refused"}
+    assert "schedule" in body["note"]
 
 
-def test_ready_degrades_rather_than_raising_when_dependencies_are_really_down(
+def test_losing_the_database_is_a_503(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A real connection failure must surface as 503, never as a 500 traceback."""
+    """Without it there is nothing to plan on, so traffic should go elsewhere."""
+    monkeypatch.setattr(
+        health,
+        "_check_database",
+        lambda: DependencyCheck(status="unavailable", detail="Connection refused"),
+    )
+    monkeypatch.setattr(health, "_check_redis", lambda: DependencyCheck(status="ok"))
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "unavailable"
+
+
+def test_a_real_connection_failure_is_reported_not_raised(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead dependency must surface as a status, never as a 500 traceback."""
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://nobody@127.0.0.1:1/nothing")
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
     # Settings, engine, and session factory are all lru_cached.
@@ -73,7 +96,7 @@ def test_ready_degrades_rather_than_raising_when_dependencies_are_really_down(
         response = client.get("/ready")
 
         assert response.status_code == 503
-        assert response.json()["status"] == "degraded"
+        assert response.json()["status"] == "unavailable"
         assert response.json()["checks"]["database"]["status"] == "unavailable"
     finally:
         for cached in (get_settings, get_engine, get_session_factory):

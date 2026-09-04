@@ -1,0 +1,48 @@
+# Render deployment, as an alternative to fly.toml. Both are committed because
+# free tiers change their terms and having the second one written down is
+# cheaper than rediscovering it.
+services:
+  - type: web
+    name: a2transit-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /ready
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false          # set in the dashboard; it is a credential
+      - key: REDIS_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: worker
+    name: a2transit-poller
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    dockerCommand: python -m a2transit.realtime
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+
+  - type: web
+    name: a2transit-web
+    runtime: static
+    buildCommand: npm --prefix frontend ci && npm --prefix frontend run build
+    staticPublishPath: ./frontend/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      # A single-page app: every path has to reach index.html or a shared trip
+      # link 404s on reload, which is the one URL people actually paste.
+      - type: rewrite
+        source: /*
+        destination: /index.html

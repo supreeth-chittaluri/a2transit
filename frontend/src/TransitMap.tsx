@@ -242,7 +242,14 @@ export function TransitMap({ itinerary, vehicles = [], onPick }: Props) {
 
       const bounds = boundsOf(itinerary);
       if (!bounds.isEmpty()) {
-        instance.fitBounds(bounds, { padding: 60, maxZoom: 15, duration: 600 });
+        // A 600 ms fly-to is pleasant and, for somebody who asked the OS not to
+        // animate things, is exactly what they asked not to happen.
+        const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        instance.fitBounds(bounds, {
+          padding: 60,
+          maxZoom: 15,
+          duration: still ? 0 : 600,
+        });
       }
     };
 

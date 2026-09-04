@@ -8,8 +8,8 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [728 of their stop pairs sit within
 400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M7 complete — door-to-door planning against live vehicle positions
-and predictions. Blake Transit Center to Central Campus is twelve minutes:
+**Status:** M8 complete — deploy-ready. Door-to-door planning against live
+vehicle positions and predictions, with shareable trip links. Blake Transit Center to Central Campus is twelve minutes:
 TheRide route 4, a three-minute walk, then MBus CS. Neither agency's planner
 will tell you that.
 
@@ -71,6 +71,50 @@ last — and draws the selected one along the route's published shape.
 > 8000/5173, because those are already in use by another project on the
 > development machine. Change them in `docker-compose.yml`, `vite.config.ts`,
 > and `.env` if you want the conventional ones.
+
+## Deploying
+
+Everything needed is committed: `backend/Dockerfile`, `fly.toml`, `render.yaml`
+and `frontend/vercel.json`. What is *not* committed is any account — creating
+those and pasting in the credentials is the one part that has to be done by
+hand.
+
+| Tier | Service | Free plan |
+|---|---|---|
+| API + poller | Fly.io or Render | yes, scales to zero |
+| Postgres + PostGIS | Neon or Supabase | yes |
+| Redis | Upstash | yes |
+| Frontend | Vercel or Cloudflare Pages | yes |
+
+```bash
+# 1. Provision Postgres (with PostGIS) and Redis, then load the feeds into it:
+DATABASE_URL=postgresql+psycopg://... backend/.venv/bin/python -m a2transit.ingest
+
+# 2. API and poller
+fly launch --no-deploy
+fly secrets set DATABASE_URL=... REDIS_URL=... CORS_ORIGINS=https://your-frontend
+fly deploy
+
+# 3. Frontend
+VITE_API_BASE_URL=https://your-api npm --prefix frontend run build
+```
+
+The image was built and run against a live database before being committed: it
+plans the cross-agency Blake→Central Campus trip from inside the container.
+
+Three things about the deployment that are load-bearing rather than incidental:
+
+- **`/ready` treats Redis as optional.** Postgres missing is a 503 — there is
+  nothing to plan on. Redis missing is a 200 with `"status": "degraded"`,
+  because realtime is an enhancement by construction and failing readiness would
+  pull a working planner out of the load balancer over the loss of a feature it
+  is designed to survive.
+- **One uvicorn worker per instance.** The timetable cache is per-process and a
+  service date is ~120 MB resident, so four workers is four copies of the same
+  tables. Scale with instances.
+- **The SPA needs a catch-all rewrite.** A shared trip link carries its state in
+  the query string, and without the rewrite it 404s on reload — which is the one
+  URL people actually paste.
 
 ### Realtime
 
@@ -134,11 +178,20 @@ curl 'localhost:8001/plan?from=theride:1605&to=mbus:207&depart=2026-09-10T09:00'
 
 ```bash
 cd backend
-./.venv/bin/pytest              # 308 tests
+./.venv/bin/pytest              # 344 tests
 ./.venv/bin/pytest -m slow      # the 500-case differential
 ./.venv/bin/pytest -m network   # against the live agency feeds
 ./.venv/bin/ruff check ..
+
+cd ../frontend
+npm test                        # 26 tests, no browser needed
 ```
+
+The frontend tests cover the browser-shaped logic that has no oracle: trip
+links round-tripping through the address bar, and the local-time formatting
+that `toISOString()` would silently shift by four hours. The routing itself is
+checked against two independent engines in Python, which is a much stronger
+thing to have than a React component snapshot.
 
 Two markers keep the default run fast and self-contained:
 
@@ -445,8 +498,10 @@ bus.
       WebSocket vehicle markers and alerts. *Done: ~250 predictions folded into
       the timetable in 50 ms; a 15-minute delay on route 4's 06:02 does not just
       move the arrival, it moves the rider to the 06:10.*
-- [ ] **M8 — Polish + deploy.** Shareable trip URLs, live departures board,
-      error and empty states, all four tiers on free plans. *Public URL.*
+- [x] **M8 — Polish + deploy.** Shareable trip URLs, live departures board,
+      filtered service alerts, keyboard-navigable search, error and empty
+      states, and a container plus manifests for all four tiers on free plans.
+      *Deploy-ready; the public URL needs accounts I do not have — see below.*
 - [ ] **M9 — Measure.** Feed scale, query latency p50/p95, correctness
       spot-checks, realtime end-to-end lag — recorded here.
 

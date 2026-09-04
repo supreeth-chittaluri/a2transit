@@ -1,3 +1,4 @@
+import type React from "react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, geocode, searchStops } from "../lib/api";
@@ -49,6 +50,13 @@ const MIN_QUERY = 2;
  *     pointerdown. Both of those land before the row's own handler and unmount
  *     the button mid-press, so the rider sees the list react and nothing get
  *     chosen.
+ *
+ * Keyboard: arrows move the highlight, Enter takes it, Escape closes without
+ * choosing. Wired by hand rather than left to the browser because a `<datalist>`
+ * cannot show a second line per row, and a stop's routes are what tell three
+ * identically-named ones apart. The ARIA combobox roles are what make that
+ * legible to a screen reader — a `<ul>` of buttons announces as a list of
+ * buttons, which is true and useless.
  */
 export function EndpointField({
   label,
@@ -61,7 +69,9 @@ export function EndpointField({
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestions>(EMPTY);
   const [loading, setLoading] = useState(false);
-  const listId = useId();
+  const [highlighted, setHighlighted] = useState(-1);
+  const fieldId = useId();
+  const listId = `${fieldId}-list`;
   const container = useRef<HTMLDivElement>(null);
 
   // A chosen endpoint owns the field's text until the rider types again.
@@ -148,26 +158,78 @@ export function EndpointField({
     onChange(endpoint);
     setQuery(endpoint.label);
     onOpenChange(false);
+    setHighlighted(-1);
   };
 
-  const hasSuggestions = suggestions.stops.length > 0 || suggestions.address !== null;
+  // One ordered list, so arrow keys and clicks traverse the same thing. The
+  // address is last: it arrives after the stops and inserting it at the top
+  // would move every row out from under the cursor.
+  const options: Endpoint[] = [
+    ...suggestions.stops,
+    ...(suggestions.address ? [suggestions.address] : []),
+  ];
+  const hasSuggestions = options.length > 0;
+
+  // A highlight left pointing at row 7 of a list that now has two would be
+  // invisible and would make Enter choose nothing.
+  useEffect(() => {
+    setHighlighted((current) => (current >= options.length ? -1 : current));
+  }, [options.length]);
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      onOpenChange(false);
+      setHighlighted(-1);
+      return;
+    }
+    if (!isOpen || !hasSuggestions) {
+      if (event.key === "ArrowDown") onOpenChange(true);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setHighlighted((current) => {
+        const next = current + step;
+        // Wrapping rather than clamping: at the end of a short list, one more
+        // Down is much more likely to mean "start again" than "do nothing".
+        if (next < 0) return options.length - 1;
+        if (next >= options.length) return 0;
+        return next;
+      });
+      return;
+    }
+    if (event.key === "Enter" && highlighted >= 0) {
+      event.preventDefault();
+      choose(options[highlighted]);
+    }
+  };
 
   return (
     <div className="field" ref={container}>
-      <label className="field__label" htmlFor={listId}>
+      <label className="field__label" htmlFor={fieldId}>
         {label}
       </label>
       <div className="field__control">
         <input
-          id={listId}
+          id={fieldId}
           className="field__input"
           type="text"
           autoComplete="off"
+          role="combobox"
+          aria-expanded={isOpen && hasSuggestions}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            highlighted >= 0 ? `${listId}-option-${highlighted}` : undefined
+          }
           placeholder={placeholder}
           value={query}
+          onKeyDown={onKeyDown}
           onChange={(event) => {
             setQuery(event.target.value);
             onOpenChange(true);
+            setHighlighted(-1);
             // The old choice is stale the moment the text stops matching it.
             if (value) onChange(null);
           }}
@@ -190,35 +252,35 @@ export function EndpointField({
       </div>
 
       {isOpen && query.trim().length >= MIN_QUERY && (
-        <ul className="suggestions">
-          {suggestions.stops.map((stop) => (
-            <li key={stop.id}>
+        <ul className="suggestions" id={listId} role="listbox" aria-label={`${label} results`}>
+          {options.map((option, index) => (
+            <li key={option.id ?? `place-${index}`} role="presentation">
               <button
                 type="button"
-                className="suggestion"
-                onClick={() => choose(stop)}
+                id={`${listId}-option-${index}`}
+                role="option"
+                aria-selected={index === highlighted}
+                className={
+                  "suggestion" +
+                  (option.kind === "place" ? " suggestion--address" : "") +
+                  (index === highlighted ? " suggestion--active" : "")
+                }
+                onMouseEnter={() => setHighlighted(index)}
+                onClick={() => choose(option)}
               >
-                <span className="suggestion__name">{stop.label}</span>
+                <span className="suggestion__name">{option.label}</span>
                 <span className="suggestion__meta">
-                  {stop.routes?.length ? stop.routes.slice(0, 4).join(" · ") : stop.id?.split(":")[0]}
+                  {option.kind === "place"
+                    ? "address"
+                    : option.routes?.length
+                      ? option.routes.slice(0, 4).join(" · ")
+                      : option.id?.split(":")[0]}
                 </span>
               </button>
             </li>
           ))}
-          {suggestions.address && (
-            <li>
-              <button
-                type="button"
-                className="suggestion suggestion--address"
-                onClick={() => choose(suggestions.address!)}
-              >
-                <span className="suggestion__name">{suggestions.address.label}</span>
-                <span className="suggestion__meta">address</span>
-              </button>
-            </li>
-          )}
           {!hasSuggestions && (
-            <li className="suggestions__empty">
+            <li className="suggestions__empty" role="presentation">
               {loading ? "Searching…" : (suggestions.error ?? "Nothing found")}
             </li>
           )}

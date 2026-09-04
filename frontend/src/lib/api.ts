@@ -73,6 +73,28 @@ export interface StopSearchResult {
   routes: string[];
 }
 
+export interface Departure {
+  agency: string;
+  routeId: string;
+  routeLabel: string;
+  routeColor: string | null;
+  tripId: string;
+  headsign: string | null;
+  departure: string;
+  inSeconds: number;
+}
+
+export interface Alert {
+  agency: string;
+  id: string;
+  header: string;
+  description: string;
+  effect: string;
+  url: string | null;
+  routeIds: string[];
+  stopIds: string[];
+}
+
 export interface GeocodeResult {
   query: string;
   name: string;
@@ -126,3 +148,21 @@ export const searchStops = (query: string, signal?: AbortSignal): Promise<StopSe
 
 export const geocode = (query: string, signal?: AbortSignal): Promise<GeocodeResult> =>
   get<GeocodeResult>("/geocode", { q: query }, signal);
+
+export const departures = (
+  stopId: string,
+  at: string,
+  signal?: AbortSignal,
+): Promise<Departure[]> => {
+  // `agency:stop_id` is one string everywhere else; the departures route takes
+  // the two as separate path segments, so this is the one place it is split.
+  const [agency, id] = stopId.split(":");
+  return get<{ departures: Departure[] }>(
+    `/stops/${agency}/${encodeURIComponent(id)}/departures`,
+    { at, limit: "12" },
+    signal,
+  ).then((body) => body.departures);
+};
+
+export const serviceAlerts = (signal?: AbortSignal): Promise<Alert[]> =>
+  get<{ alerts: Alert[] }>("/realtime/alerts", {}, signal).then((body) => body.alerts);

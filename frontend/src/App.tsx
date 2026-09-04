@@ -1,13 +1,32 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ATTRIBUTION } from "./config";
+import { AlertBanner } from "./components/AlertBanner";
+import { DepartureBoard } from "./components/DepartureBoard";
 import { EndpointField } from "./components/EndpointField";
 import { ItineraryList } from "./components/ItineraryList";
 import { TransitMap } from "./TransitMap";
 import { ApiError, planTrip, type PlanResponse } from "./lib/api";
 import { toLocalIso, toQueryValue, type Endpoint } from "./lib/endpoints";
+import { readTripFromUrl, writeTripToUrl } from "./lib/tripUrl";
 import { useVehicles } from "./lib/useVehicles";
 import { useApiHealth } from "./useApiHealth";
+
+/**
+ * The feeds cover 2026-08-23 to 2027-01-30, so "now" is only a useful default
+ * while today falls inside that. Outside it every query correctly returns
+ * nothing, which reads as a broken planner rather than an expired timetable.
+ */
+const FEED_START = "2026-08-23";
+const FEED_END = "2027-01-02";
+
+function clampToFeedWindow(iso: string): string {
+  if (iso.slice(0, 10) < FEED_START) return `${FEED_START}T09:00`;
+  if (iso.slice(0, 10) > FEED_END) return `${FEED_END}T09:00`;
+  return iso;
+}
+
+const nowInWindow = () => clampToFeedWindow(toLocalIso(new Date()));
 
 function ApiStatus({ vehicleCount, live }: { vehicleCount: number; live: boolean }) {
   const health = useApiHealth();
@@ -18,12 +37,16 @@ function ApiStatus({ vehicleCount, live }: { vehicleCount: number; live: boolean
   if (health.state === "down") {
     return <span className="status status--down">API unreachable ({health.reason})</span>;
   }
+  // Connected but with nothing to show is not "live". It means the poller is
+  // not running, or every bus is in the depot — either way, claiming
+  // "0 buses live" next to a green dot says the opposite of what is true.
+  const reporting = live && vehicleCount > 0;
   return (
     <span className="status">
       {/* Realtime being off is a normal state, not a fault: the planner works
           from the schedule and says so rather than pretending. */}
-      <span className={live ? "status--up" : "status--pending"}>
-        {live ? `● ${vehicleCount} buses live` : "○ schedule only"}
+      <span className={reporting ? "status--up" : "status--pending"}>
+        {reporting ? `● ${vehicleCount} buses live` : "○ schedule only"}
       </span>
       <span className="status__version">API v{health.version}</span>
     </span>
@@ -36,30 +59,19 @@ type PlanState =
   | { state: "done"; response: PlanResponse }
   | { state: "error"; message: string };
 
-/**
- * The feeds cover 2026-08-23 to 2027-01-30, so "now" is only a useful default
- * while today falls inside that. Outside it every query returns nothing, which
- * looks like a broken planner rather than an expired timetable.
- */
-const FEED_START = "2026-08-23";
-const FEED_END = "2027-01-02";
-
-function defaultDeparture(): string {
-  const now = new Date();
-  const iso = toLocalIso(now);
-  if (iso.slice(0, 10) < FEED_START) return `${FEED_START}T09:00`;
-  if (iso.slice(0, 10) > FEED_END) return `${FEED_END}T09:00`;
-  return iso;
-}
-
 export default function App() {
-  const [origin, setOrigin] = useState<Endpoint | null>(null);
-  const [destination, setDestination] = useState<Endpoint | null>(null);
-  const [depart, setDepart] = useState(defaultDeparture);
-  // Only one suggestion list at a time; see EndpointField.
-  const [openField, setOpenField] = useState<"origin" | "destination" | null>(null);
+  // Seeded from the URL, so a shared link opens the trip it describes.
+  const initial = useMemo(() => readTripFromUrl(), []);
+  const [origin, setOrigin] = useState<Endpoint | null>(initial.origin);
+  const [destination, setDestination] = useState<Endpoint | null>(initial.destination);
+  const [depart, setDepart] = useState(() =>
+    initial.depart ? clampToFeedWindow(initial.depart) : nowInWindow(),
+  );
   const [plan, setPlan] = useState<PlanState>({ state: "idle" });
   const [selected, setSelected] = useState(0);
+  const [openField, setOpenField] = useState<"origin" | "destination" | null>(null);
+  const [board, setBoard] = useState<{ id: string; name: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   const feed = useVehicles();
 
   // Picking on the map fills whichever end is still empty — destination first,
@@ -77,6 +89,10 @@ export default function App() {
     },
     [origin, destination],
   );
+
+  useEffect(() => {
+    writeTripToUrl({ origin, destination, depart });
+  }, [origin, destination, depart]);
 
   useEffect(() => {
     if (!origin || !destination) {
@@ -104,19 +120,60 @@ export default function App() {
     return () => controller.abort();
   }, [origin, destination, depart]);
 
+  // A link shared from the URL bar names a stop by id; the plan response names
+  // it properly, so the fields fill in once the answer arrives.
+  useEffect(() => {
+    if (plan.state !== "done") return;
+    setOrigin((current) =>
+      current && current.kind === "stop" && current.label === current.id
+        ? { ...current, label: plan.response.origin.name, lat: plan.response.origin.lat, lon: plan.response.origin.lon }
+        : current,
+    );
+    setDestination((current) =>
+      current && current.kind === "stop" && current.label === current.id
+        ? {
+            ...current,
+            label: plan.response.destination.name,
+            lat: plan.response.destination.lat,
+            lon: plan.response.destination.lon,
+          }
+        : current,
+    );
+  }, [plan]);
+
   const swap = () => {
     setOrigin(destination);
     setDestination(origin);
   };
 
+  const share = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be refused, and the URL is in the address bar
+      // anyway — there is nothing useful to say about it.
+    }
+  };
+
   const itineraries = plan.state === "done" ? plan.response.itineraries : [];
   const shown = itineraries[selected] ?? null;
+  const routeIds = useMemo(
+    () =>
+      new Set(
+        itineraries.flatMap((itinerary) =>
+          itinerary.legs.map((leg) => leg.routeId).filter((id): id is string => Boolean(id)),
+        ),
+      ),
+    [itineraries],
+  );
 
   return (
     <div className="app">
       <header className="header">
         <h1 className="header__title">a2transit</h1>
-        <p className="header__tagline">TheRide + U-M MBus, as one network</p>
+        <p className="header__tagline">TheRide + U&#8209;M MBus, as one network</p>
         <ApiStatus vehicleCount={feed.vehicles.length} live={feed.state === "live"} />
       </header>
 
@@ -153,32 +210,62 @@ export default function App() {
               <label className="field__label" htmlFor="depart">
                 Leaving
               </label>
-              <input
-                id="depart"
-                className="field__input"
-                type="datetime-local"
-                value={depart}
-                min={`${FEED_START}T00:00`}
-                onChange={(event) => setDepart(event.target.value)}
-              />
+              <div className="field__row">
+                <input
+                  id="depart"
+                  className="field__input"
+                  type="datetime-local"
+                  value={depart}
+                  min={`${FEED_START}T00:00`}
+                  max={`${FEED_END}T23:59`}
+                  onChange={(event) => setDepart(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => setDepart(nowInWindow())}
+                >
+                  Now
+                </button>
+              </div>
             </div>
           </form>
 
           <div className="results">
+            {board && (
+              <DepartureBoard
+                stopId={board.id}
+                stopName={board.name}
+                at={depart}
+                onClose={() => setBoard(null)}
+              />
+            )}
+
+            <AlertBanner routeIds={routeIds} />
+
             {plan.state === "idle" && (
               <p className="panel__placeholder">
                 Pick an origin and a destination — type a stop or an address, or click
                 the map. Journeys cross between the two agencies wherever their stops
-                are within a 400 m walk.
+                are within a 400&nbsp;m walk, which neither agency's own planner will
+                do for you.
               </p>
             )}
-            {plan.state === "loading" && <p className="panel__placeholder">Planning…</p>}
-            {plan.state === "error" && <p className="panel__error">{plan.message}</p>}
+            {plan.state === "loading" && (
+              <p className="panel__placeholder" aria-live="polite">
+                Planning…
+              </p>
+            )}
+            {plan.state === "error" && (
+              <p className="panel__error" role="alert">
+                {plan.message}
+              </p>
+            )}
             {plan.state === "done" && itineraries.length === 0 && (
               <p className="panel__placeholder">
-                Nothing runs between these two within six hours of that time. Try a
-                different departure — service is thin in the early morning and after
-                the last run.
+                Nothing runs between these two within six hours of that time. Service
+                is thin before 06:00 and after the last run, and thinner on Sundays —
+                try a different departure.
               </p>
             )}
             {plan.state === "done" && plan.response.realtime.applied && (
@@ -188,13 +275,19 @@ export default function App() {
               </p>
             )}
             {plan.state === "done" && itineraries.length > 0 && (
-              <ItineraryList
-                itineraries={itineraries}
-                selected={selected}
-                onSelect={setSelected}
-                queryMs={plan.response.queryMs}
-                destinationLabel={destination?.label ?? ""}
-              />
+              <>
+                <ItineraryList
+                  itineraries={itineraries}
+                  selected={selected}
+                  onSelect={setSelected}
+                  queryMs={plan.response.queryMs}
+                  destinationLabel={destination?.label ?? ""}
+                  onShowDepartures={(id, name) => setBoard({ id, name })}
+                />
+                <button type="button" className="share" onClick={share}>
+                  {copied ? "Link copied" : "Copy link to this trip"}
+                </button>
+              </>
             )}
           </div>
         </aside>

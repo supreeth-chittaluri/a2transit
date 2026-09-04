@@ -7,8 +7,16 @@ differently:
              a platform's process supervisor should poll; failing it because
              Postgres blipped would restart a perfectly healthy container.
 
-  /ready   — can the app actually serve traffic? 503 when a dependency is down,
-             so a load balancer stops routing to it.
+  /ready   — can the app actually serve traffic? 503 when a *required*
+             dependency is down, so a load balancer stops routing to it.
+
+Only Postgres is required. Redis holds realtime, and M7 made that an
+enhancement by construction: predictions expire, and planning falls back to the
+schedule on its own. Failing readiness because Redis is unreachable would pull
+a perfectly serviceable planner out of the load balancer over the loss of a
+feature it is designed to work without — so a Redis outage reports `degraded`
+with a 200, which is visible to a human reading /ready and invisible to a
+health check that only looks at the status code.
 """
 
 from __future__ import annotations
@@ -40,8 +48,11 @@ class HealthResponse(BaseModel):
 
 
 class ReadyResponse(BaseModel):
-    status: Literal["ready", "degraded"]
+    status: Literal["ready", "degraded", "unavailable"]
     checks: dict[str, DependencyCheck]
+    #: What is lost while degraded, in words, for whoever is reading this at
+    #: 3am wondering whether it matters.
+    note: str | None = None
 
 
 def _check_database() -> DependencyCheck:
@@ -81,10 +92,27 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok", version=__version__)
 
 
+#: Dependencies without which the app cannot answer at all.
+REQUIRED = ("database",)
+
+
 @router.get("/ready", response_model=ReadyResponse)
 def ready(response: Response) -> ReadyResponse:
     checks = {"database": _check_database(), "redis": _check_redis()}
-    degraded = any(check.status != "ok" for check in checks.values())
-    if degraded:
+
+    if any(checks[name].status != "ok" for name in REQUIRED):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return ReadyResponse(status="degraded" if degraded else "ready", checks=checks)
+        return ReadyResponse(
+            status="unavailable",
+            checks=checks,
+            note="No database: nothing can be planned.",
+        )
+
+    if checks["redis"].status != "ok":
+        return ReadyResponse(
+            status="degraded",
+            checks=checks,
+            note="No Redis: planning from the schedule, without live delays or vehicles.",
+        )
+
+    return ReadyResponse(status="ready", checks=checks)

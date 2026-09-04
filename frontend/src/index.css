@@ -433,3 +433,195 @@ body {
   color: var(--muted);
   font-size: 0.75rem;
 }
+
+
+/* --------------------------------------------- polish: fields and chips */
+
+.field__row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.field__row .field__input { flex: 1; }
+
+.chip {
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover { color: var(--text); border-color: var(--accent); }
+
+.suggestion--active {
+  background: var(--border);
+  /* Marks the keyboard highlight distinctly from plain hover, so tabbing
+     through does not look like the mouse is somewhere it is not. */
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.share {
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.45rem;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.share:hover { color: var(--text); border-color: var(--accent); }
+
+.leg__from--button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.leg__from--button:hover { color: var(--accent); }
+
+/* ------------------------------------------------------ departure board */
+
+.board {
+  margin-bottom: 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.board__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.board__title {
+  flex: 1;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.board__close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.board__close:hover { color: var(--text); }
+
+.board__rows {
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+}
+
+.board__row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.82rem;
+}
+
+.board__headsign {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board__when {
+  display: grid;
+  justify-items: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.board__countdown { font-weight: 600; }
+.board__clock { color: var(--muted); font-size: 0.72rem; }
+
+/* --------------------------------------------------------------- alerts */
+
+.alerts { display: grid; gap: 0.4rem; margin-bottom: 0.7rem; }
+
+.alerts__others { display: grid; gap: 0.4rem; }
+
+.alerts__toggle {
+  justify-self: start;
+  padding: 0.1rem 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.alerts__toggle:hover { color: var(--text); }
+
+.alert {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.45rem 0.55rem;
+  border-left: 2px solid var(--pending);
+  border-radius: 0 6px 6px 0;
+  background: rgb(251 191 36 / 8%);
+  font-size: 0.78rem;
+}
+
+.alert__body { flex: 1; }
+.alert__header { display: block; color: var(--text); }
+.alert__text {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+  /* Agency alert text runs to paragraphs; the headline is the part that has
+     to be readable at a glance. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.alert__link { color: var(--accent); font-size: 0.75rem; }
+
+.alert__dismiss {
+  align-self: start;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.alert__dismiss:hover { color: var(--text); }
+
+/* ------------------------------------------------------- focus and motion */
+
+:where(button, input, a):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
