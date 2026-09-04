@@ -7,6 +7,8 @@
   --up: #4ade80;
   --down: #f87171;
   --pending: #fbbf24;
+  --accent: #60a5fa;
+  --raised: #1e222b;
 
   color-scheme: dark;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -103,4 +105,331 @@ body {
     border-right: none;
     border-top: 1px solid var(--border);
   }
+}
+
+
+/* ---------------------------------------------------------------- search */
+
+.search {
+  display: grid;
+  gap: 0.6rem;
+  padding-bottom: 0.9rem;
+  margin-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.field {
+  position: relative;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.field__label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.field__control {
+  position: relative;
+}
+
+.field__input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.field__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.field__clear {
+  position: absolute;
+  top: 50%;
+  right: 0.3rem;
+  transform: translateY(-50%);
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.field__clear:hover { color: var(--text); background: var(--raised); }
+
+.swap {
+  justify-self: start;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.swap:hover:not(:disabled) { color: var(--text); }
+.swap:disabled { opacity: 0.4; cursor: default; }
+
+/* The list overlays what follows it rather than pushing the form around as
+   results arrive; a field that jumps while you are reading it is unusable. */
+.suggestions {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 0.15rem 0 0;
+  padding: 0.2rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 45%);
+}
+
+.suggestion {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+.suggestion:hover, .suggestion:focus-visible { background: var(--border); }
+
+.suggestion__name { flex: 1; }
+.suggestion__meta {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.suggestion--address .suggestion__meta { color: var(--accent); }
+
+.suggestions__empty {
+  padding: 0.4rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* ----------------------------------------------------------- itineraries */
+
+.panel__error {
+  margin: 0;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid #4a2226;
+  border-radius: 6px;
+  background: #2a1619;
+  color: #fca5a5;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.itineraries__summary {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.itineraries__timing {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.itinerary {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.itinerary--selected {
+  border-color: var(--accent);
+}
+
+.itinerary__header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.15rem 0.5rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.itinerary__header:hover { background: var(--raised); }
+
+.itinerary__times {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.itinerary__duration {
+  justify-self: end;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.itinerary__meta {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.itinerary__routes {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.3rem;
+}
+
+.route-badge {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  /* Route colours come from the feed and some are pale; a hairline keeps a
+     yellow badge from vanishing into the panel. */
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
+}
+
+.route-badge--small { font-size: 0.68rem; }
+
+/* --------------------------------------------------------------- the legs */
+
+.legs {
+  margin: 0;
+  padding: 0.2rem 0.7rem 0.7rem;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.leg {
+  display: grid;
+  grid-template-columns: 3.2rem 0.75rem 1fr;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  font-size: 0.82rem;
+}
+
+.leg__time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A continuous rail down the itinerary, so the legs read as one journey
+   rather than as four unrelated rows. */
+.leg__marker {
+  position: relative;
+  width: 3px;
+  margin-left: 0.2rem;
+  border-radius: 2px;
+  background: var(--border);
+}
+.leg__marker--walk {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--muted) 0 3px,
+    transparent 3px 7px
+  );
+}
+.leg__marker--end {
+  background: none;
+}
+.leg__marker--end::before {
+  content: "";
+  position: absolute;
+  top: 0.3rem;
+  left: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.leg__body { display: grid; gap: 0.1rem; }
+
+.leg__headline {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.leg__detail { color: var(--muted); font-size: 0.75rem; }
+.leg__to { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.results { min-height: 0; }
+
+/* ------------------------------------------------------------- map pins */
+
+.pin {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 50%);
+  cursor: pointer;
+}
+.pin--origin { background: #4ade80; }
+.pin--destination { background: #f87171; }
+
+.maplibregl-popup-content {
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+.maplibregl-popup-tip { border-top-color: var(--raised) !important; }
+
+
+/* ------------------------------------------------------------ realtime */
+
+.status {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.status__version { color: var(--muted); }
+
+.realtime-note {
+  margin: 0 0 0.6rem;
+  padding: 0.35rem 0.55rem;
+  border-left: 2px solid var(--up);
+  background: rgb(74 222 128 / 8%);
+  color: var(--muted);
+  font-size: 0.75rem;
 }

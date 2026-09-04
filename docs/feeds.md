@@ -176,15 +176,29 @@ effectively the same corner:
  2.3 m  TheRide "Glen + Catherine"             <-> MBus "Glen/Catherine Outbound"
 ```
 
-Measured with PostGIS `ST_DWithin` over `geography` after ingest (M1), which is
-what M4 will actually generate footpaths from. An earlier estimate said 732; that
-count used spherical haversine, and four pairs sit close enough to the 400 m
-threshold that the WGS84 spheroid moves them across it. Where the two disagree,
-the PostGIS number is the one that matters.
+Measured with PostGIS `ST_DWithin` over `geography` after ingest (M1). An earlier
+estimate said 732; that count used spherical haversine, and four pairs sit close
+enough to the 400 m threshold that the WGS84 spheroid moves them across it. Where
+the two disagree, the PostGIS number is the one that matters.
 
 This is what makes the merged graph worth building: neither agency's own trip
-planner will route you across these pairs. The PostGIS `ST_DWithin` footpath
-generation in M4 will pick them up automatically.
+planner will route you across these pairs.
+
+**M4 generates them.** The `footpaths` table holds 8,308 directed links at 400 m
+— 6,852 within an agency, 1,456 (the 728 pairs above, both ways) across. It is
+the only table in the schema whose key spans both feeds, which is the whole
+point of it, and the reason the ingest cannot select one agency's rows with
+`agency_source = :source`: reloading TheRide has to drop the MBus→TheRide
+direction too, or the foreign key fails partway through.
+
+Straight-line distances get a 1.3 detour allowance before becoming walking time,
+because `ST_Distance` measures a line through buildings. The two constants
+happen to cancel to one second per metre; that is arithmetic coincidence, not
+something to rely on.
+
+Blake Transit Center to Central Campus, previously unanswerable, is now twelve
+minutes: TheRide route 4, a three-minute walk at Huron and Ingalls, then MBus
+CS.
 
 ---
 
@@ -195,7 +209,14 @@ generation in M4 will pick them up automatically.
 | [OpenFreeMap](https://openfreemap.org/) / [Protomaps](https://protomaps.com/) | basemap tiles | free, no key |
 | [Photon](https://photon.komoot.io/) | geocoding (address → lat/lon) | free, no key |
 | [Nominatim](https://operations.osmfoundation.org/policies/nominatim/) | geocoding fallback — **usage policy caps 1 req/s, requires a real User-Agent** | free |
-| [OSRM demo server](https://router.project-osrm.org/) | walking legs (M4, optional) — rate-limited, no SLA | free |
+| [OSRM demo server](https://router.project-osrm.org/) | walking legs — **not used**; rate-limited, no SLA | free |
 
-Walking legs start as straight-line haversine with a fixed speed; OSRM is an
-enhancement, never a hard dependency.
+Walking legs are straight-line PostGIS distance with a detour factor and a fixed
+speed. OSRM was considered and deliberately left out: a journey planner must not
+stop working because someone else's unmetered demo server is busy, and the
+detour factor recovers most of what a network router would tell us.
+
+Geocoding tries Photon first and Nominatim second, and is proxied through the
+API rather than called from the browser — Nominatim's policy asks for an
+identifying User-Agent and at most one request a second, neither of which a
+browser tab can honestly promise.

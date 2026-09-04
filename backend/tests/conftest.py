@@ -13,15 +13,59 @@ from sqlalchemy import Engine, create_engine, text
 
 from a2transit.config import get_settings
 from a2transit.db import schema
+from a2transit.db.models import AgencySource
+from a2transit.ingest.loader import load_from_path
 from a2transit.main import create_app
+from a2transit.preprocess.footpaths import build_footpaths
+from a2transit.preprocess.patterns import build_patterns
 
 #: Repo-root data/ directory, where the ingest caches downloaded feeds.
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
+#: The real feeds, as cached by `python -m a2transit.ingest`.
+REAL_FEEDS: tuple[tuple[AgencySource, str], ...] = (
+    (AgencySource.THERIDE, "theride.zip"),
+    (AgencySource.MBUS, "mbus.zip"),
+)
+
+
+def load_real_feeds(engine: Engine, *, patterns: bool = False) -> Engine:
+    """Load both published feeds and rebuild everything derived from them.
+
+    Every module that wants the real network goes through here rather than
+    calling `load_from_path` itself, because the derived tables are not
+    optional. Footpaths in particular are dropped by a reload at both ends —
+    that is what keeps the cross-agency rows from outliving the stops they
+    reference — so a module that loads a feed and forgets to rebuild them gets a
+    network whose two halves are joined or not depending on which module ran
+    first. That is not a test failure anyone enjoys chasing.
+
+    Skips rather than fails when the cached feeds are absent, so the suite still
+    runs on a machine that has never ingested.
+    """
+    for agency, filename in REAL_FEEDS:
+        path = DATA_DIR / filename
+        if not path.exists():
+            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
+        load_from_path(engine, agency, path)
+        if patterns:
+            build_patterns(engine, agency)
+    build_footpaths(engine)
+    return engine
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(create_app())
+
+
+@pytest.fixture(scope="module")
+def module_monkeypatch() -> Iterator[pytest.MonkeyPatch]:
+    """monkeypatch, but module-scoped, for fixtures that build once per module."""
+    patcher = pytest.MonkeyPatch()
+    yield patcher
+    patcher.undo()
 
 
 def _test_database_url() -> tuple[str, str, str]:
@@ -83,7 +127,7 @@ def _truncate_all(engine: Engine) -> None:
         connection.execute(
             text(
                 "TRUNCATE agencies, stops, routes, calendar, calendar_dates, shapes, "
-                "shape_geometries, trips, stop_times, transfers, feed_versions "
+                "shape_geometries, trips, stop_times, transfers, footpaths, feed_versions "
                 "RESTART IDENTITY CASCADE"
             )
         )

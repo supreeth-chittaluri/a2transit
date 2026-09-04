@@ -4,18 +4,21 @@ Fewest-transfers has no M2 oracle — M2 answers earliest arrival only — so th
 module leans on hand-verified pairs and structural invariants. The bounded
 oracle in test_bounded_oracle.py is the third leg.
 
-Hand-verified pair: MBus Domino's Farms Lobby H (218) -> FXB Outbound (247),
-Thursday 2026-09-10 departing 08:45. Both options were read out of stop_times
-before being written down:
+Hand-verified pair: TheRide Huron Pkwy + HHS (357) -> Jackson + Grandview
+(1330), Thursday 2026-09-10 departing 08:45. Three non-dominated options:
 
-    1 transfer  arrive 09:43:55   trip 2020 (NES) 08:54:33 -> 09:28:00 at stop 222
-                                  trip 580020 (MX) 09:30:00 -> 09:43:55
-    2 transfers arrive 09:38:59   trip 2020 (NES) 08:54:33 -> 09:20:53 at stop 241
-                                  trip 1577020 (CS) 09:22:30 -> 09:22:54 at stop 243
-                                  trip 301020 (NES) 09:37:18 -> 09:38:59
+    1 transfer   arrive 10:05:55   theride 3,  then theride 30
+    2 transfers  arrive 09:51:__   theride 66, mbus CS, theride 31, then a walk
+    3 transfers  arrive 09:35:55   theride 66, mbus CS, theride 61, theride 30
 
-One fewer transfer costs just under five minutes, which is exactly the trade-off
-the second criterion exists to expose.
+Half an hour bought with two extra changes, and the middle option ends on foot
+— which is what makes this a better pair than M3's. It also crosses between the
+agencies twice, so it only exists at all because of M4's footpaths.
+
+The earlier pair (MBus 218 -> 247 at the same time) was retired here: with
+footpaths there is now a zero-transfer journey arriving 09:19:25 that dominates
+both of its options, so it no longer demonstrates a trade-off. It survives in
+INVARIANT_PAIRS.
 """
 
 from __future__ import annotations
@@ -26,11 +29,9 @@ import pytest
 from sqlalchemy import Engine
 
 from a2transit.db.models import AgencySource
-from a2transit.ingest.loader import load_from_path
-from a2transit.preprocess.patterns import build_patterns
 from a2transit.routing.engine import PlanOutcome, plan_with_raptor
 from a2transit.routing.patterns import RaptorTimetable, build_raptor_timetable
-from tests.conftest import DATA_DIR
+from tests.conftest import load_real_feeds
 
 pytestmark = pytest.mark.db
 
@@ -38,19 +39,14 @@ THURSDAY = dt.date(2026, 9, 10)
 THERIDE = AgencySource.THERIDE
 MBUS = AgencySource.MBUS
 
-TRADE_OFF_ORIGIN = (MBUS, "218")
-TRADE_OFF_DESTINATION = (MBUS, "247")
+TRADE_OFF_ORIGIN = (THERIDE, "357")
+TRADE_OFF_DESTINATION = (THERIDE, "1330")
 TRADE_OFF_DEPARTURE = dt.datetime(2026, 9, 10, 8, 45)
 
 
 @pytest.fixture(scope="module")
 def engine(db_engine: Engine) -> Engine:
-    for agency, filename in ((THERIDE, "theride.zip"), (MBUS, "mbus.zip")):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
-        build_patterns(db_engine, agency)
+    load_real_feeds(db_engine, patterns=True)
     return db_engine
 
 
@@ -67,48 +63,57 @@ def trade_off(timetable: RaptorTimetable) -> PlanOutcome:
 
 
 class TestHandVerifiedTradeOff:
-    def test_both_options_are_offered(self, trade_off: PlanOutcome) -> None:
-        assert len(trade_off.itineraries) == 2
-        assert [it.transfer_count for it in trade_off.itineraries] == [1, 2]
+    def test_all_three_options_are_offered(self, trade_off: PlanOutcome) -> None:
+        assert [it.transfer_count for it in trade_off.itineraries] == [1, 2, 3]
 
     def test_the_one_transfer_option_matches_the_schedule(
         self, trade_off: PlanOutcome
     ) -> None:
         itinerary = trade_off.itineraries[0]
 
-        assert itinerary.arrival == dt.datetime(2026, 9, 10, 9, 43, 55)
-        assert [leg.trip_id for leg in itinerary.ride_legs] == ["2020", "580020"]
-        assert [leg.route_label for leg in itinerary.ride_legs] == ["NES", "MX"]
+        assert itinerary.arrival == dt.datetime(2026, 9, 10, 10, 5, 55)
+        assert [leg.route_label for leg in itinerary.ride_legs] == ["3", "30"]
         first, second = itinerary.ride_legs
-        assert first.depart == dt.datetime(2026, 9, 10, 8, 54, 33)
-        assert first.to_stop.stop_id == "222"
-        assert second.depart == dt.datetime(2026, 9, 10, 9, 30)
+        assert first.depart == dt.datetime(2026, 9, 10, 9, 14)
+        assert second.depart == dt.datetime(2026, 9, 10, 10, 0)
 
-    def test_the_two_transfer_option_matches_the_schedule(
+    def test_the_fastest_option_matches_the_schedule(
         self, trade_off: PlanOutcome
     ) -> None:
-        itinerary = trade_off.itineraries[1]
+        itinerary = trade_off.itineraries[-1]
 
-        assert itinerary.arrival == dt.datetime(2026, 9, 10, 9, 38, 59)
-        assert [leg.trip_id for leg in itinerary.ride_legs] == ["2020", "1577020", "301020"]
-        assert [leg.route_label for leg in itinerary.ride_legs] == ["NES", "CS", "NES"]
+        assert itinerary.arrival == dt.datetime(2026, 9, 10, 9, 35, 55)
+        assert [leg.route_label for leg in itinerary.ride_legs] == ["66", "CS", "61", "30"]
 
-    def test_one_fewer_transfer_costs_just_under_five_minutes(
+    def test_the_journey_crosses_between_the_agencies(
         self, trade_off: PlanOutcome
     ) -> None:
-        fewer, faster = trade_off.itineraries
+        """Which is why this pair does not exist before M4 at all."""
+        agencies = {leg.agency for leg in trade_off.itineraries[-1].ride_legs}
 
-        assert fewer.transfer_count < faster.transfer_count
-        assert fewer.arrival > faster.arrival
-        assert fewer.arrival - faster.arrival == dt.timedelta(minutes=4, seconds=56)
+        assert agencies == {THERIDE, MBUS}
+
+    def test_two_extra_transfers_buy_half_an_hour(self, trade_off: PlanOutcome) -> None:
+        fewest, fastest = trade_off.fewest_transfers, trade_off.fastest
+
+        assert fewest.transfer_count == 1
+        assert fastest.transfer_count == 3
+        assert fewest.arrival - fastest.arrival == dt.timedelta(minutes=30)
 
     def test_fastest_and_fewest_transfers_disagree_here(
         self, trade_off: PlanOutcome
     ) -> None:
         """If they agreed, this pair would prove nothing about the criterion."""
         assert trade_off.fastest is not trade_off.fewest_transfers
-        assert trade_off.fastest.arrival == dt.datetime(2026, 9, 10, 9, 38, 59)
+        assert trade_off.fastest.arrival == dt.datetime(2026, 9, 10, 9, 35, 55)
         assert trade_off.fewest_transfers.transfer_count == 1
+
+    def test_the_middle_option_ends_on_foot(self, trade_off: PlanOutcome) -> None:
+        """Walking into the destination is arriving there — M4 fixed that."""
+        middle = trade_off.itineraries[1]
+
+        assert middle.legs[-1].to_stop.key == (THERIDE, "1330")
+        assert middle.ride_legs[-1].to_stop.key != (THERIDE, "1330")
 
 
 class TestArrivingByDeadline:
@@ -122,24 +127,23 @@ class TestArrivingByDeadline:
     def test_a_generous_deadline_takes_the_simplest_journey(
         self, trade_off: PlanOutcome
     ) -> None:
-        chosen = trade_off.arriving_by(dt.datetime(2026, 9, 10, 9, 45))
+        chosen = trade_off.arriving_by(dt.datetime(2026, 9, 10, 10, 30))
 
         assert chosen is not None
         assert chosen.transfer_count == 1
-        assert chosen.arrival == dt.datetime(2026, 9, 10, 9, 43, 55)
+        assert chosen.arrival == dt.datetime(2026, 9, 10, 10, 5, 55)
 
     def test_a_deadline_between_the_options_forces_the_extra_transfer(
         self, trade_off: PlanOutcome
     ) -> None:
-        """09:40 rules out the 09:43:55 option, so the 2-transfer one wins."""
-        chosen = trade_off.arriving_by(dt.datetime(2026, 9, 10, 9, 40))
+        """10:00 rules out the 10:05:55 option, so the 2-transfer one wins."""
+        chosen = trade_off.arriving_by(dt.datetime(2026, 9, 10, 10, 0))
 
         assert chosen is not None
         assert chosen.transfer_count == 2
-        assert chosen.arrival == dt.datetime(2026, 9, 10, 9, 38, 59)
 
     def test_a_deadline_exactly_on_an_arrival_is_met(self, trade_off: PlanOutcome) -> None:
-        chosen = trade_off.arriving_by(dt.datetime(2026, 9, 10, 9, 43, 55))
+        chosen = trade_off.arriving_by(dt.datetime(2026, 9, 10, 10, 5, 55))
 
         assert chosen is not None
         assert chosen.transfer_count == 1
@@ -152,8 +156,8 @@ class TestArrivingByDeadline:
     ) -> None:
         """Monotonicity: more time available can never require more transfers."""
         previous: int | None = None
-        for minute in range(35, 60, 2):
-            deadline = dt.datetime(2026, 9, 10, 9, minute)
+        for minute in range(35, 59, 2):
+            deadline = dt.datetime(2026, 9, 10, 9 if minute < 60 else 10, minute % 60)
             chosen = trade_off.arriving_by(deadline)
             if chosen is None:
                 continue
@@ -231,11 +235,21 @@ class TestParetoInvariants:
                 for leg in itinerary.ride_legs:
                     assert leg.depart >= itinerary.requested_departure
 
-    def test_round_0_yields_nothing(self, timetable: RaptorTimetable) -> None:
-        """Walking-only journeys do not exist before M4 gives us footpaths."""
+    def test_round_0_answers_a_walk(self, timetable: RaptorTimetable) -> None:
+        """Two Ypsilanti Transit Center bays 29 m apart: just walk.
+
+        Round 0 used to be unreachable — walking into a stop was not arriving
+        there — so this query returned a bus ride around the block, or nothing.
+        A walk is now the whole journey, and it dominates every bus.
+        """
         outcome = plan_with_raptor(
             timetable, (THERIDE, "170"), (THERIDE, "101"), dt.datetime(2026, 9, 10, 9, 0)
         )
 
-        assert all(it.transfer_count >= 0 for it in outcome.itineraries)
-        assert all(len(it.ride_legs) >= 1 for it in outcome.itineraries)
+        assert len(outcome.itineraries) == 1
+        walk = outcome.itineraries[0]
+        assert walk.ride_legs == ()
+        assert walk.transfer_count == 0
+        assert walk.arrival == dt.datetime(2026, 9, 10, 9, 1)
+        assert walk.legs[0].from_stop.stop_id == "170"
+        assert walk.legs[0].to_stop.stop_id == "101"

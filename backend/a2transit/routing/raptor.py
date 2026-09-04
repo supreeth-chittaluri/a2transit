@@ -15,11 +15,16 @@ deliberately rather than reinvented:
 * Alighting costs MIN_TRANSFER_SECONDS; boarding is free. The rider's "ready to
   board" time at a stop is their arrival plus the floor, except at the origin,
   where they are already standing there.
-* Arriving at the destination *on foot* does not count. M2's search targets
-  vehicle-arrival events, so walking a declared transfer into the destination
-  stop is not a completed journey there either. This is arguably wrong and both
-  engines are wrong the same way; M4 makes footpaths first-class and is where it
-  gets fixed.
+* Walking into a stop is arriving there. Both engines were wrong about this
+  through M3 — M2 targeted vehicle-arrival events, and RAPTOR copied it so the
+  differential compared like with like — which meant a rider could be dropped
+  200 m from where they were going and be told the trip was impossible. M4
+  fixes it in both, together, because fixing it in one is a mismatch.
+* One footpath per round, never two in a row. Walking is relaxed only out of
+  stops a vehicle arrived at (and out of the origin, before round 1), so
+  reaching a stop on foot does not license walking on from it. M2's graph
+  enforces the same rule structurally, by only giving WALK edges to arrival
+  nodes.
 
 Scanning a pattern
 ------------------
@@ -78,12 +83,33 @@ Step = RideStep | TransferStep
 
 @dataclass(slots=True)
 class RaptorResult:
-    """Labels for every round, plus the parent pointers to rebuild journeys."""
+    """Labels for every round, plus the parent pointers to rebuild journeys.
 
-    #: arrivals[k][stop] — earliest arrival by vehicle using at most k trips.
+    There are two parent maps because there are two labels, and merging them is
+    a real bug rather than a tidiness question. A stop can be *arrived at* by
+    one vehicle and made *boardable* by a walk from somewhere else entirely, in
+    the same round; one dictionary means whichever wrote last wins, and the
+    journey rebuilt from the destination then ends at the wrong stop while
+    still reporting the right time.
+
+    That is not hypothetical. It was latent from M3 — with 15 declared
+    transfers, all inside one transit centre, the two writes never landed on the
+    same stop. With 8,308 footpaths they collide constantly: theride:544 ->
+    theride:1019 at 09:00 came back claiming 09:17 at a stop two miles from the
+    destination.
+    """
+
+    #: arrivals[k][stop] — earliest arrival using at most k vehicles, whether
+    #: the last thing the rider did was ride or walk.
     arrivals: list[dict[StopKey, int]]
-    #: parents[k][stop] — the step that produced arrivals[k][stop].
-    parents: list[dict[StopKey, Step]]
+    #: ride_parents[k][stop] — the vehicle arrival, kept even when a walk beat
+    #: it. Reconstruction needs the ride behind a walk, not the better label.
+    ride_parents: list[dict[StopKey, RideStep]]
+    #: walk_parents[k][stop] — the walk that arrived here, where one did.
+    walk_parents: list[dict[StopKey, TransferStep]]
+    #: ready_parents[k][stop] — how the rider came to be able to board here:
+    #: the ride they got off, or the walk that brought them.
+    ready_parents: list[dict[StopKey, Step]]
     rounds_run: int
     patterns_scanned: int
 
@@ -119,29 +145,49 @@ class ParetoEntry:
 
 
 def _reconstruct(result: RaptorResult, destination: StopKey, rounds: int) -> tuple[Step, ...]:
-    """Walk parent pointers back from the destination label in round `rounds`."""
+    """Walk parent pointers back from the destination label in round `rounds`.
+
+    Which map to consult depends on what is being explained. The destination
+    was arrived at, so it starts in `arrival_parents`; a ride's boarding stop is
+    somewhere the rider was merely *standing*, so that is a `ready_parents`
+    question, and the answer is a walk or is the alighting the previous round
+    already accounts for.
+    """
     steps: list[Step] = []
     stop = destination
     round_index = rounds
 
+    # Did the rider walk the last stretch? Only if a walk is what produced the
+    # label — a stop can have both a walk and a vehicle arrival in one round,
+    # and following the wrong one gives a journey that does not add up.
+    arrival = result.arrivals[round_index].get(stop)
+    final_walk = result.walk_parents[round_index].get(stop)
+    if final_walk is not None and final_walk.arrive == arrival:
+        steps.append(final_walk)
+        stop = final_walk.from_stop
+
+    # Round 0 holds a whole journey when the destination was within walking
+    # distance of the origin: no vehicle at all.
+    if round_index == 0:
+        return tuple(steps)
+
     while round_index > 0:
-        step = result.parents[round_index].get(stop)
-        if step is None:
-            # Nothing new happened in this round; the label came from an
-            # earlier one, so drop back and keep walking.
+        ride = result.ride_parents[round_index].get(stop)
+        if ride is None:
+            # Nothing new happened at this stop in this round; the label came
+            # from an earlier one, so drop back and keep walking.
             round_index -= 1
             continue
-        steps.append(step)
-        if isinstance(step, RideStep):
-            stop = step.board_stop
-            round_index -= 1
-        else:
-            stop = step.from_stop
 
-    # Round 0 holds only the walk away from the origin, if the journey used one.
-    source_step = result.parents[0].get(stop)
-    if source_step is not None:
-        steps.append(source_step)
+        steps.append(ride)
+        stop = ride.board_stop
+        round_index -= 1
+
+        # A walk into the boarding stop belongs to the round that produced it.
+        walk = result.ready_parents[round_index].get(stop)
+        if isinstance(walk, TransferStep):
+            steps.append(walk)
+            stop = walk.from_stop
 
     steps.reverse()
     return tuple(steps)
@@ -167,7 +213,9 @@ def run_raptor(
     """
     boarding_deadline = departure_time + horizon_seconds
     arrivals: list[dict[StopKey, int]] = [{} for _ in range(max_rounds + 1)]
-    parents: list[dict[StopKey, Step]] = [{} for _ in range(max_rounds + 1)]
+    ride_parents: list[dict[StopKey, RideStep]] = [{} for _ in range(max_rounds + 1)]
+    walk_parents: list[dict[StopKey, TransferStep]] = [{} for _ in range(max_rounds + 1)]
+    ready_parents: list[dict[StopKey, Step]] = [{} for _ in range(max_rounds + 1)]
 
     # Two distinct labels per stop, and conflating them is a real bug:
     #
@@ -179,41 +227,68 @@ def run_raptor(
     #                      end of a walk, or the query time at the origin.
     #
     # Only writing arrivals leaves a stop reached on foot unboardable, and every
-    # journey through a declared transfer silently disappears.
+    # journey through a footpath silently disappears.
+    #
+    # Each label carries its own parent map for the same reason: one vehicle can
+    # arrive at a stop while a walk from somewhere else makes it boardable, and
+    # a single map would lose whichever wrote first.
     ready: list[dict[StopKey, int]] = [{} for _ in range(max_rounds + 1)]
 
-    # Earliest known arrival at each stop across all rounds, used only to prune.
-    best: dict[StopKey, int] = {}
+    # Two pruning bounds, because arriving by vehicle and arriving on foot are
+    # not interchangeable: only a vehicle arrival licenses walking onward.
+    #
+    #   best_ride[stop]  earliest arrival *by vehicle*. Vehicle arrivals are
+    #                    pruned against this and nothing else.
+    #   best_any[stop]   earliest arrival by any means. What the destination is
+    #                    measured on, and what bounds the search.
+    #
+    # Pruning a vehicle arrival against a foot arrival looks safe — it is
+    # earlier, by every measure a rider cares about — and is not. theride:134
+    # to theride:378 on a Saturday reached Green + Plymouth on foot at 15:51:21,
+    # which suppressed the bus that got there at 15:52; the journey needed the
+    # bus, because the last 380 m had to be walked and the rider had already
+    # spent their one walk. RAPTOR returned nothing where M2 found a 45-minute
+    # trip. Four of 500 differential cases, all on the same Saturday.
+    best_ride: dict[StopKey, int] = {}
+    best_any: dict[StopKey, int] = {}
     best_ready: dict[StopKey, int] = {origin: departure_time}
 
     arrivals[0][origin] = departure_time
+    best_any[origin] = departure_time
     ready[0][origin] = departure_time
     marked: set[StopKey] = {origin}
 
-    # Transfers *from the origin*, relaxed before round 1.
+    # Footpaths *out of the origin*, relaxed before round 1.
     #
     # Without this a rider starting at one Ypsilanti Transit Center bay cannot
-    # walk to the next one and board there, because the in-round transfer pass
+    # walk to the next one and board there, because the in-round footpath pass
     # only relaxes stops that a vehicle arrived at. The origin never has a
-    # vehicle arrival, so its declared transfers were silently unusable — one
-    # case in 500 came back an hour late with three extra rides.
+    # vehicle arrival, so the walks out of it were silently unusable — one case
+    # in 500 came back an hour late with three extra rides.
     #
     # No transfer floor is charged here: the rider is already standing at the
     # origin rather than alighting from something, which is how M2's graph
     # models it too.
-    for target, seconds in timetable.transfers.get(origin, ()):
+    for target, seconds in timetable.footpaths.get(origin, ()):
         landed = departure_time + seconds
+        step = TransferStep(
+            from_stop=origin,
+            to_stop=target,
+            depart=departure_time,
+            arrive=landed,
+            seconds=seconds,
+        )
         if landed < best_ready.get(target, INFINITY):
             best_ready[target] = landed
             ready[0][target] = landed
-            parents[0][target] = TransferStep(
-                from_stop=origin,
-                to_stop=target,
-                depart=departure_time,
-                arrive=landed,
-                seconds=seconds,
-            )
+            ready_parents[0][target] = step
             marked.add(target)
+        # Walking in is arriving, so a destination within walking distance of
+        # the origin is answered in round 0, with no vehicle at all.
+        if landed < best_any.get(target, INFINITY):
+            best_any[target] = landed
+            arrivals[0][target] = landed
+            walk_parents[0][target] = step
     patterns_scanned = 0
     rounds_run = 0
 
@@ -232,8 +307,13 @@ def run_raptor(
                     queue[pattern_index] = position
         marked = set()
 
-        target_bound = best.get(destination, INFINITY) if destination else INFINITY
+        target_bound = best_any.get(destination, INFINITY) if destination else INFINITY
         previous_ready = ready[round_index - 1]
+
+        # Vehicle arrivals made this round, which are the only stops a walk may
+        # start from. Collected as the scan runs rather than read back out of
+        # arrivals[], which also holds arrivals made on foot.
+        rode_in: dict[StopKey, int] = {}
 
         for pattern_index, start_position in queue.items():
             pattern: PatternTable = timetable.patterns[pattern_index]
@@ -248,17 +328,11 @@ def run_raptor(
 
                 if run is not None and pattern.can_alight[position]:
                     arrival = run.arrivals[position]
-                    # Prune against both this stop's best and the destination's:
-                    # a label that cannot beat the destination cannot extend to
-                    # anything that does.
-                    if arrival < min(best.get(stop, INFINITY), target_bound):
-                        arrivals[round_index][stop] = arrival
-                        best[stop] = arrival
-                        boardable = arrival + MIN_TRANSFER_SECONDS
-                        if boardable < best_ready.get(stop, INFINITY):
-                            ready[round_index][stop] = boardable
-                            best_ready[stop] = boardable
-                        parents[round_index][stop] = RideStep(
+                    # Prune against this stop's best *vehicle* arrival and the
+                    # destination's best of any kind: a label that cannot beat
+                    # the destination cannot extend to anything that does.
+                    if arrival < min(best_ride.get(stop, INFINITY), target_bound):
+                        ride = RideStep(
                             pattern_id=pattern.pattern_id,
                             route_id=pattern.route_id,
                             agency=pattern.agency,
@@ -270,6 +344,17 @@ def run_raptor(
                             depart=run.departures[board_position],
                             arrive=arrival,
                         )
+                        best_ride[stop] = arrival
+                        ride_parents[round_index][stop] = ride
+                        rode_in[stop] = arrival
+                        if arrival < best_any.get(stop, INFINITY):
+                            best_any[stop] = arrival
+                            arrivals[round_index][stop] = arrival
+                        boardable = arrival + MIN_TRANSFER_SECONDS
+                        if boardable < best_ready.get(stop, INFINITY):
+                            ready[round_index][stop] = boardable
+                            ready_parents[round_index][stop] = ride
+                            best_ready[stop] = boardable
                         marked.add(stop)
 
                 # Can the rider catch an earlier trip from here?
@@ -295,41 +380,57 @@ def run_raptor(
                     run = pattern.runs[candidate]
                     board_position = position
 
-        # Declared transfers settle inside the round that produced the arrival:
+        # Footpaths settle inside the round that produced the arrival:
         # walking never adds a vehicle, so it must not consume a round.
-        for stop in tuple(marked):
-            arrival = arrivals[round_index].get(stop)
-            if arrival is None:
-                continue
-            for target, seconds in timetable.transfers.get(stop, ()):
+        #
+        # `rode_in` holds exactly the vehicle arrivals this round made, so a
+        # stop a walk has already improved cannot become a walking source. The
+        # rider would otherwise walk twice — 800 m, in one round, and only when
+        # the iteration order happened to visit the two stops that way round. It
+        # produced journeys whose legs did not join up: a 13-minute walk between
+        # two stops with no footpath between them.
+        for stop, arrival in rode_in.items():
+            for target, seconds in timetable.footpaths.get(stop, ()):
                 landed = arrival + MIN_TRANSFER_SECONDS + seconds
+                step = TransferStep(
+                    from_stop=stop,
+                    to_stop=target,
+                    depart=arrival,
+                    arrive=landed,
+                    seconds=MIN_TRANSFER_SECONDS + seconds,
+                )
                 if landed < best_ready.get(target, INFINITY):
                     best_ready[target] = landed
                     ready[round_index][target] = landed
-                    # Deliberately not written into arrivals[]: M2 does not
-                    # treat walking into a stop as arriving there, and the two
-                    # engines must agree for the differential test to mean
-                    # anything. Fixed properly in M4.
-                    parents[round_index][target] = TransferStep(
-                        from_stop=stop,
-                        to_stop=target,
-                        depart=arrival,
-                        arrive=landed,
-                        seconds=MIN_TRANSFER_SECONDS + seconds,
-                    )
+                    ready_parents[round_index][target] = step
                     marked.add(target)
+                # Walking in is arriving. Written under its own guard because
+                # the two labels move independently: a stop can already have an
+                # earlier vehicle arrival and still become boardable sooner on
+                # foot, or the other way round.
+                if landed < best_any.get(target, INFINITY):
+                    best_any[target] = landed
+                    arrivals[round_index][target] = landed
+                    walk_parents[round_index][target] = step
 
         # A stop improved only as a boarding point carries no vehicle arrival,
-        # so the next round must still see it as reachable.
-        for stop, value in ready[round_index].items():
-            ready[round_index].setdefault(stop, value)
+        # so the next round must still see it as reachable. Its parent comes
+        # along: a value inherited without one leaves the rebuilt journey with
+        # no account of how the rider reached that stop.
         for stop, value in previous_ready.items():
             if value < ready[round_index].get(stop, INFINITY):
                 ready[round_index][stop] = value
+                inherited = ready_parents[round_index - 1].get(stop)
+                if inherited is None:
+                    ready_parents[round_index].pop(stop, None)
+                else:
+                    ready_parents[round_index][stop] = inherited
 
     return RaptorResult(
         arrivals=arrivals,
-        parents=parents,
+        ride_parents=ride_parents,
+        walk_parents=walk_parents,
+        ready_parents=ready_parents,
         rounds_run=rounds_run,
         patterns_scanned=patterns_scanned,
     )
@@ -347,7 +448,10 @@ def pareto_set(
     entries: list[ParetoEntry] = []
     best_so_far: int | None = None
 
-    for rounds in range(1, len(result.arrivals)):
+    # From round 0: a destination inside walking distance of the origin is
+    # reached with no vehicle at all, and that is a legitimate answer rather
+    # than the absence of one.
+    for rounds in range(0, len(result.arrivals)):
         arrival = result.arrivals[rounds].get(destination)
         if arrival is None:
             continue

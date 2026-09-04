@@ -26,12 +26,12 @@ from dataclasses import dataclass, field
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
-from a2transit.routing.constants import close_transfers, effective_transfer_seconds
 from a2transit.routing.service_calendar import AgencyCalendar, load_calendars
 from a2transit.routing.timetable import (
     Route,
     Stop,
     StopKey,
+    load_footpaths,
     load_routes,
     load_stops,
     service_date_window,
@@ -93,8 +93,10 @@ class RaptorTimetable:
     patterns: tuple[PatternTable, ...]
     #: stop -> [(pattern index, position)], the reverse index each round starts from.
     stop_index: dict[StopKey, tuple[tuple[int, int], ...]]
-    #: stop -> [(target stop, seconds)] for agency-declared transfers.
-    transfers: dict[StopKey, tuple[tuple[StopKey, int], ...]]
+    #: stop -> [(target stop, seconds)] for every walkable link out of it.
+    #: Adjacency rather than a flat list: the transfer pass of each round asks
+    #: "where can I walk to from here" once per improved stop.
+    footpaths: dict[StopKey, tuple[tuple[StopKey, int], ...]]
     #: Stop and route metadata, so a journey can be rendered without the M2
     #: timetable also being loaded.
     stops: dict[StopKey, Stop] = field(default_factory=dict)
@@ -210,33 +212,18 @@ def _load_trip_times(
     return result
 
 
-def _load_transfers(engine: Engine) -> dict[StopKey, tuple[tuple[StopKey, int], ...]]:
-    with engine.connect() as connection:
-        rows = connection.execute(
-            text(
-                """
-                SELECT t.agency_source, t.from_stop_id, t.to_stop_id,
-                       t.min_transfer_time, ST_Distance(a.geog, b.geog) AS metres
-                  FROM transfers t
-                  JOIN stops a ON a.agency_source = t.agency_source
-                              AND a.stop_id = t.from_stop_id
-                  JOIN stops b ON b.agency_source = t.agency_source
-                              AND b.stop_id = t.to_stop_id
-                 WHERE t.transfer_type <> 3 AND t.from_stop_id <> t.to_stop_id
-                """
-            )
-        ).all()
+def _footpath_adjacency(engine: Engine) -> dict[StopKey, tuple[tuple[StopKey, int], ...]]:
+    """The shared footpath set, grouped by origin stop.
 
-    links: dict[StopKey, list[tuple[StopKey, int]]] = defaultdict(list)
-    for row in rows:
-        agency = AgencySource(row.agency_source)
-        links[(agency, row.from_stop_id)].append(
-            (
-                (agency, row.to_stop_id),
-                effective_transfer_seconds(row.min_transfer_time, row.metres),
-            )
-        )
-    return close_transfers({stop: tuple(targets) for stop, targets in links.items()})
+    Same rows M2 loads, reshaped for the lookup RAPTOR performs. Deriving both
+    from `load_footpaths` rather than from two queries is what keeps the engines
+    honestly comparable — a difference in shape is fine, a difference in content
+    would make the differential test meaningless.
+    """
+    grouped: dict[StopKey, list[tuple[StopKey, int]]] = defaultdict(list)
+    for footpath in load_footpaths(engine):
+        grouped[footpath.from_stop].append((footpath.to_stop, footpath.seconds))
+    return {stop: tuple(targets) for stop, targets in grouped.items()}
 
 
 def _columns_are_sorted(columns: tuple[tuple[int, ...], ...]) -> bool:
@@ -322,7 +309,7 @@ def build_raptor_timetable(
         base_date=base_date,
         patterns=tuple(patterns),
         stop_index={stop: tuple(entries) for stop, entries in stop_index.items()},
-        transfers=_load_transfers(engine),
+        footpaths=_footpath_adjacency(engine),
         stops=load_stops(engine),
         routes=load_routes(engine),
     )

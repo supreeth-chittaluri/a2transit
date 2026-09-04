@@ -6,9 +6,8 @@ import pytest
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
-from a2transit.ingest.loader import load_from_path
 from a2transit.preprocess.patterns import build_patterns, verify_no_overtaking
-from tests.conftest import DATA_DIR
+from tests.conftest import load_real_feeds
 
 pytestmark = pytest.mark.db
 
@@ -18,12 +17,7 @@ MBUS = AgencySource.MBUS
 
 @pytest.fixture(scope="module")
 def built(db_engine: Engine) -> Engine:
-    for agency, filename in ((THERIDE, "theride.zip"), (MBUS, "mbus.zip")):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
-        build_patterns(db_engine, agency)
+    load_real_feeds(db_engine, patterns=True)
     return db_engine
 
 

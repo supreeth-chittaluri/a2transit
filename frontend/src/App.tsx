@@ -1,38 +1,205 @@
+import { useCallback, useEffect, useState } from "react";
+
 import { ATTRIBUTION } from "./config";
+import { EndpointField } from "./components/EndpointField";
+import { ItineraryList } from "./components/ItineraryList";
 import { TransitMap } from "./TransitMap";
+import { ApiError, planTrip, type PlanResponse } from "./lib/api";
+import { toLocalIso, toQueryValue, type Endpoint } from "./lib/endpoints";
+import { useVehicles } from "./lib/useVehicles";
 import { useApiHealth } from "./useApiHealth";
 
-function ApiStatus() {
+function ApiStatus({ vehicleCount, live }: { vehicleCount: number; live: boolean }) {
   const health = useApiHealth();
 
-  switch (health.state) {
-    case "checking":
-      return <span className="status status--pending">checking API…</span>;
-    case "up":
-      return <span className="status status--up">API v{health.version}</span>;
-    case "down":
-      return <span className="status status--down">API unreachable ({health.reason})</span>;
+  if (health.state === "checking") {
+    return <span className="status status--pending">checking API…</span>;
   }
+  if (health.state === "down") {
+    return <span className="status status--down">API unreachable ({health.reason})</span>;
+  }
+  return (
+    <span className="status">
+      {/* Realtime being off is a normal state, not a fault: the planner works
+          from the schedule and says so rather than pretending. */}
+      <span className={live ? "status--up" : "status--pending"}>
+        {live ? `● ${vehicleCount} buses live` : "○ schedule only"}
+      </span>
+      <span className="status__version">API v{health.version}</span>
+    </span>
+  );
+}
+
+type PlanState =
+  | { state: "idle" }
+  | { state: "loading" }
+  | { state: "done"; response: PlanResponse }
+  | { state: "error"; message: string };
+
+/**
+ * The feeds cover 2026-08-23 to 2027-01-30, so "now" is only a useful default
+ * while today falls inside that. Outside it every query returns nothing, which
+ * looks like a broken planner rather than an expired timetable.
+ */
+const FEED_START = "2026-08-23";
+const FEED_END = "2027-01-02";
+
+function defaultDeparture(): string {
+  const now = new Date();
+  const iso = toLocalIso(now);
+  if (iso.slice(0, 10) < FEED_START) return `${FEED_START}T09:00`;
+  if (iso.slice(0, 10) > FEED_END) return `${FEED_END}T09:00`;
+  return iso;
 }
 
 export default function App() {
+  const [origin, setOrigin] = useState<Endpoint | null>(null);
+  const [destination, setDestination] = useState<Endpoint | null>(null);
+  const [depart, setDepart] = useState(defaultDeparture);
+  // Only one suggestion list at a time; see EndpointField.
+  const [openField, setOpenField] = useState<"origin" | "destination" | null>(null);
+  const [plan, setPlan] = useState<PlanState>({ state: "idle" });
+  const [selected, setSelected] = useState(0);
+  const feed = useVehicles();
+
+  // Picking on the map fills whichever end is still empty — destination first,
+  // because an origin is usually typed and a destination is usually pointed at.
+  const pickOnMap = useCallback(
+    (lat: number, lon: number) => {
+      const place: Endpoint = {
+        kind: "place",
+        label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
+        lat,
+        lon,
+      };
+      if (!origin) setOrigin(place);
+      else if (!destination) setDestination(place);
+    },
+    [origin, destination],
+  );
+
+  useEffect(() => {
+    if (!origin || !destination) {
+      setPlan({ state: "idle" });
+      return;
+    }
+
+    const controller = new AbortController();
+    setPlan({ state: "loading" });
+    setSelected(0);
+
+    planTrip(toQueryValue(origin), toQueryValue(destination), depart, controller.signal)
+      .then((response) => setPlan({ state: "done", response }))
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setPlan({
+          state: "error",
+          message:
+            error instanceof ApiError
+              ? error.message
+              : "Could not reach the planner. Is the API running?",
+        });
+      });
+
+    return () => controller.abort();
+  }, [origin, destination, depart]);
+
+  const swap = () => {
+    setOrigin(destination);
+    setDestination(origin);
+  };
+
+  const itineraries = plan.state === "done" ? plan.response.itineraries : [];
+  const shown = itineraries[selected] ?? null;
+
   return (
     <div className="app">
       <header className="header">
         <h1 className="header__title">a2transit</h1>
         <p className="header__tagline">TheRide + U-M MBus, as one network</p>
-        <ApiStatus />
+        <ApiStatus vehicleCount={feed.vehicles.length} live={feed.state === "live"} />
       </header>
 
       <main className="main">
         <aside className="panel">
-          {/* M6 replaces this with origin/destination search and the itinerary list. */}
-          <p className="panel__placeholder">
-            Trip planning arrives in M6. The map below confirms MapLibre renders free
-            OpenFreeMap tiles with no API key.
-          </p>
+          <form className="search" onSubmit={(event) => event.preventDefault()}>
+            <EndpointField
+              label="From"
+              placeholder="Stop name or address"
+              value={origin}
+              onChange={setOrigin}
+              isOpen={openField === "origin"}
+              onOpenChange={(open) => setOpenField(open ? "origin" : null)}
+            />
+            <button
+              type="button"
+              className="swap"
+              onClick={swap}
+              disabled={!origin && !destination}
+              aria-label="Swap origin and destination"
+              title="Swap"
+            >
+              ⇅
+            </button>
+            <EndpointField
+              label="To"
+              placeholder="Stop name or address"
+              value={destination}
+              onChange={setDestination}
+              isOpen={openField === "destination"}
+              onOpenChange={(open) => setOpenField(open ? "destination" : null)}
+            />
+            <div className="field">
+              <label className="field__label" htmlFor="depart">
+                Leaving
+              </label>
+              <input
+                id="depart"
+                className="field__input"
+                type="datetime-local"
+                value={depart}
+                min={`${FEED_START}T00:00`}
+                onChange={(event) => setDepart(event.target.value)}
+              />
+            </div>
+          </form>
+
+          <div className="results">
+            {plan.state === "idle" && (
+              <p className="panel__placeholder">
+                Pick an origin and a destination — type a stop or an address, or click
+                the map. Journeys cross between the two agencies wherever their stops
+                are within a 400 m walk.
+              </p>
+            )}
+            {plan.state === "loading" && <p className="panel__placeholder">Planning…</p>}
+            {plan.state === "error" && <p className="panel__error">{plan.message}</p>}
+            {plan.state === "done" && itineraries.length === 0 && (
+              <p className="panel__placeholder">
+                Nothing runs between these two within six hours of that time. Try a
+                different departure — service is thin in the early morning and after
+                the last run.
+              </p>
+            )}
+            {plan.state === "done" && plan.response.realtime.applied && (
+              <p className="realtime-note">
+                Live: {plan.response.realtime.runsAdjusted} trips adjusted, worst
+                delay {Math.round(plan.response.realtime.maxDelaySeconds / 60)} min.
+              </p>
+            )}
+            {plan.state === "done" && itineraries.length > 0 && (
+              <ItineraryList
+                itineraries={itineraries}
+                selected={selected}
+                onSelect={setSelected}
+                queryMs={plan.response.queryMs}
+                destinationLabel={destination?.label ?? ""}
+              />
+            )}
+          </div>
         </aside>
-        <TransitMap />
+
+        <TransitMap itinerary={shown} vehicles={feed.vehicles} onPick={pickOnMap} />
       </main>
 
       <footer className="footer">{ATTRIBUTION}</footer>

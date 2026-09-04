@@ -305,6 +305,59 @@ class Transfer(Base):
     )
 
 
+class Footpath(Base):
+    """A walkable link between two stops, generated from geometry (M4).
+
+    This is the table that makes "TheRide + MBus as one network" true. The
+    agencies declare 15 usable transfers between them — all TheRide's, all
+    inside Ypsilanti Transit Center — so before this table the two networks
+    touched nowhere, and a TheRide-to-MBus query correctly returned nothing.
+    PostGIS `ST_DWithin` over `stops.geog` at 400 m finds 8,308 directed links,
+    1,456 of them crossing between the agencies.
+
+    Both directions are stored as separate rows even though the geometry is
+    symmetric. The routing engines look up "where can I walk to from here",
+    which wants a plain index scan on the leading key columns, not a UNION of
+    two half-tables; and a declared `min_transfer_time` is directional, so the
+    two rows of a pair can legitimately differ.
+
+    Unlike `transfers`, the key spans *two* agencies — this is the only table
+    where a single row references both feeds, which is the whole point of it.
+    """
+
+    __tablename__ = "footpaths"
+
+    from_agency_source: Mapped[AgencySource] = mapped_column(
+        AgencySourceEnum, primary_key=True
+    )
+    from_stop_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    to_agency_source: Mapped[AgencySource] = mapped_column(AgencySourceEnum, primary_key=True)
+    to_stop_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: Straight-line ST_Distance over geography, in metres.
+    metres: Mapped[float] = mapped_column(Float)
+    #: What the walk actually costs the rider: the detour allowance and the
+    #: transfer floor are already applied, so the router adds nothing.
+    seconds: Mapped[int] = mapped_column(Integer)
+    #: The agency's own min_transfer_time, where it declares this pair. Kept for
+    #: provenance: it is never larger than `seconds`, and for both feeds today
+    #: it is always 10, which is why it is not trusted on its own.
+    declared_seconds: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["from_agency_source", "from_stop_id"],
+            ["stops.agency_source", "stops.stop_id"],
+        ),
+        ForeignKeyConstraint(
+            ["to_agency_source", "to_stop_id"],
+            ["stops.agency_source", "stops.stop_id"],
+        ),
+        # No index beyond the primary key: it already leads with the two "from"
+        # columns, which is the only lookup either engine performs.
+    )
+
+
 class RoutePattern(Base):
     """A RAPTOR "route": the set of trips sharing one ordered stop sequence.
 
@@ -491,6 +544,7 @@ TABLES_IN_DEPENDENCY_ORDER: tuple[type[Base], ...] = (
     StopPattern,
     PatternStop,
     RoutePattern,
+    Footpath,
     StopTime,
     Transfer,
     Trip,
@@ -502,3 +556,17 @@ TABLES_IN_DEPENDENCY_ORDER: tuple[type[Base], ...] = (
     Stop,
     Agency,
 )
+
+#: How to select one agency's rows, where `agency_source = :source` is wrong.
+#:
+#: `footpaths` is the only table keyed across both feeds, and a reload of one
+#: agency must drop the cross-agency links at *both* ends — otherwise a
+#: TheRide reload leaves MBus->TheRide rows pointing at stops that no longer
+#: exist, and the foreign key fails halfway through the load.
+AGENCY_ROW_PREDICATE: dict[str, str] = {
+    Footpath.__tablename__: "from_agency_source = :source OR to_agency_source = :source",
+}
+
+
+def agency_row_predicate(table: str) -> str:
+    return AGENCY_ROW_PREDICATE.get(table, "agency_source = :source")

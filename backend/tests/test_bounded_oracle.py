@@ -19,13 +19,11 @@ import pytest
 from sqlalchemy import Engine
 
 from a2transit.db.models import AgencySource
-from a2transit.ingest.loader import load_from_path
-from a2transit.preprocess.patterns import build_patterns
 from a2transit.routing.bounded import bounded_curve
 from a2transit.routing.engine import plan_with_raptor
 from a2transit.routing.patterns import RaptorTimetable, build_raptor_timetable
 from a2transit.routing.timetable import Timetable, build_timetable
-from tests.conftest import DATA_DIR
+from tests.conftest import load_real_feeds
 
 pytestmark = pytest.mark.db
 
@@ -50,12 +48,7 @@ IDS = [f"{o[1]}->{d[1]}@{t:%H%M}" for o, d, t in ORACLE_PAIRS]
 
 @pytest.fixture(scope="module")
 def engine(db_engine: Engine) -> Engine:
-    for agency, filename in ((THERIDE, "theride.zip"), (MBUS, "mbus.zip")):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
-        build_patterns(db_engine, agency)
+    load_real_feeds(db_engine, patterns=True)
     return db_engine
 
 
@@ -227,12 +220,28 @@ class TestHorizonRegression:
         dijkstra_timetable: Timetable,
         raptor_timetable: RaptorTimetable,
     ) -> None:
-        """Nothing is reachable within three vehicles here; RAPTOR once claimed
-        a 19:01:33 arrival."""
+        """RAPTOR once claimed a 19:01:33 arrival here on a bus it could not board.
+
+        Asserted against the oracle at every budget rather than against fixed
+        times: adding footpaths changed what is reachable within three vehicles,
+        which is a change in the data, not a regression. What must not change is
+        that the two engines say the same thing at every budget.
+        """
         departure = dt.datetime(2026, 9, 10, 8, 45)
         outcome = plan_with_raptor(
             raptor_timetable, (THERIDE, "606"), (THERIDE, "354"), departure
         )
+        curve = bounded_curve(
+            engine,
+            (THERIDE, "606"),
+            (THERIDE, "354"),
+            departure,
+            max_boardings=MAX_BOARDINGS,
+            timetable=dijkstra_timetable,
+        )
+        oracle = {point.max_boardings: point.arrival for point in curve}
 
-        assert _raptor_bounded(outcome, 3) is None
-        assert _raptor_bounded(outcome, 4) == dt.datetime(2026, 9, 10, 10, 51, 48)
+        for budget in range(1, MAX_BOARDINGS + 1):
+            assert _raptor_bounded(outcome, budget) == oracle.get(budget), (
+                f"disagreement at {budget} vehicles"
+            )

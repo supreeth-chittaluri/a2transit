@@ -5,6 +5,14 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 export const apiUrl = (path: string): string =>
   API_BASE_URL ? `${API_BASE_URL}${path}` : `/api${path}`;
 
+// Same origin as the API, with the scheme swapped. Deriving it from
+// location rather than hardcoding means it works behind TLS in production
+// without a second environment variable to forget to set.
+export const wsUrl = (path: string): string => {
+  const base = API_BASE_URL || `${window.location.origin}/api`;
+  return base.replace(/^http/, "ws") + path;
+};
+
 // OpenFreeMap serves this style and its tiles free with no API key and no
 // account, which is why it is here rather than Mapbox.
 export const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";

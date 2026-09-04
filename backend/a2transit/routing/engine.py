@@ -27,6 +27,7 @@ from a2transit.routing.raptor import (
     DEFAULT_MAX_ROUNDS,
     ParetoEntry,
     RideStep,
+    TransferStep,
     fewest_transfers_arriving_by,
     pareto_set,
     run_raptor,
@@ -46,6 +47,15 @@ class PlanOutcome:
     itineraries: tuple[Itinerary, ...]
     engine_name: EngineName
     seconds: float
+    #: What live predictions did to the timetable this was planned on, or None
+    #: when it was planned on the schedule. Typed loosely to keep the routing
+    #: package from importing the realtime one — the dependency runs the other
+    #: way, and should.
+    delays: object | None = None
+
+    @property
+    def is_realtime(self) -> bool:
+        return self.delays is not None
 
     @property
     def fastest(self) -> Itinerary | None:
@@ -89,10 +99,30 @@ def _entry_to_itinerary(
     rides = [step for step in entry.steps if isinstance(step, RideStep)]
     legs: list[Leg] = []
 
-    # A journey may begin by walking a declared transfer away from the origin,
-    # in which case the first ride boards somewhere else and the legs would not
-    # chain back to where the rider actually started.
-    if rides and rides[0].board_stop != origin:
+    # A journey with no ride at all: the destination was within walking
+    # distance and RAPTOR answered it in round 0.
+    if not rides:
+        walk = next((step for step in entry.steps if isinstance(step, TransferStep)), None)
+        if walk is not None:
+            legs.append(
+                TransferLeg(
+                    from_stop=timetable.stops[origin],
+                    to_stop=timetable.stops[destination],
+                    depart=requested_departure,
+                    arrive=timetable.absolute_time(walk.arrive),
+                )
+            )
+        return Itinerary(
+            origin=timetable.stops[origin],
+            destination=timetable.stops[destination],
+            requested_departure=requested_departure,
+            legs=tuple(legs),
+        )
+
+    # A journey may begin by walking away from the origin, in which case the
+    # first ride boards somewhere else and the legs would not chain back to
+    # where the rider actually started.
+    if rides[0].board_stop != origin:
         legs.append(
             TransferLeg(
                 from_stop=timetable.stops[origin],
@@ -126,6 +156,23 @@ def _entry_to_itinerary(
                 trip_id=ride.run.trip_id,
                 headsign=None,
                 intermediate_stops=max(ride.alight_position - ride.board_position - 1, 0),
+            )
+        )
+
+    # ...and may end on foot, for the same reason: the last bus can drop the
+    # rider at a different stop 100 m from where they are going.
+    if rides[-1].alight_stop != destination:
+        final_walk = entry.steps[-1]
+        legs.append(
+            TransferLeg(
+                from_stop=timetable.stops[rides[-1].alight_stop],
+                to_stop=timetable.stops[destination],
+                depart=timetable.absolute_time(rides[-1].arrive),
+                arrive=timetable.absolute_time(
+                    final_walk.arrive
+                    if isinstance(final_walk, TransferStep)
+                    else rides[-1].arrive
+                ),
             )
         )
 

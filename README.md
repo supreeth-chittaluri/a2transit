@@ -8,7 +8,10 @@ Neither agency's own trip planner will route you across the other's network,
 even where their stops share a corner. [728 of their stop pairs sit within
 400 m of each other, several within 2 m](docs/feeds.md#2-the-cross-agency-transfer-premise-is-real).
 
-**Status:** M3 complete — RAPTOR planning in ~1 ms, verified against two independent oracles.
+**Status:** M7 complete — door-to-door planning against live vehicle positions
+and predictions. Blake Transit Center to Central Campus is twelve minutes:
+TheRide route 4, a three-minute walk, then MBus CS. Neither agency's planner
+will tell you that.
 
 ---
 
@@ -17,6 +20,7 @@ even where their stops share a corner. [728 of their stop pairs sit within
 | | |
 |---|---|
 | Routing | RAPTOR (round-based), validated against a time-dependent Dijkstra reference |
+| Walking | PostGIS `ST_DWithin` footpaths — 8,308 links, 1,456 of them across agencies |
 | Backend | Python 3.12 · FastAPI · SQLAlchemy |
 | Data | PostgreSQL + PostGIS |
 | Realtime | GTFS-Realtime pollers → Redis pub/sub → WebSocket |
@@ -59,10 +63,60 @@ npm install && npm run dev
 
 Then: API docs at <http://localhost:8001/docs>, app at <http://localhost:5174>.
 
+Type a stop name or a street address into either field, or click the map. The
+planner returns every non-dominated option — fewest changes first, fastest
+last — and draws the selected one along the route's published shape.
+
 > **Ports.** The API defaults to **8001** and Vite to **5174**, not the usual
 > 8000/5173, because those are already in use by another project on the
 > development machine. Change them in `docker-compose.yml`, `vite.config.ts`,
 > and `.env` if you want the conventional ones.
+
+### Realtime
+
+```bash
+cd backend
+./.venv/bin/python -m a2transit.realtime              # poll both agencies
+./.venv/bin/python -m a2transit.realtime --once       # one cycle
+./.venv/bin/python -m a2transit.realtime --simulate-delay theride:3572020:900
+```
+
+Six feeds — vehicles, trips and alerts for each agency — every 20 seconds into
+Redis. The poller is one process regardless of how many API workers run: the
+agencies see one client, and an API restart does not interrupt the feed.
+
+**Realtime is an overlay, not a mode.** Predictions are folded into a copy of
+the cached schedule timetable, and RAPTOR is handed something it cannot tell
+from the schedule — so the Pareto set, the horizon, the transfer floor and every
+differential test keep working unchanged. The consequence worth having: a
+delayed bus is not merely reported as late, it *loses*. Delay route 4's 06:02 by
+fifteen minutes and the planner puts the rider on the 06:10 instead.
+
+Everything written to Redis expires. Stale realtime is worse than none — a
+five-minute-old "on time" will send someone running for a bus that has gone — so
+if the poller dies the keys drain and planning falls back to the schedule
+inside two minutes, with no health check to wire up and no code path that only
+runs during an outage.
+
+Neither agency publishes `delay`; both publish absolute predicted times. A delay
+therefore does not exist until something compares a prediction to the schedule,
+which is why `realtime/delays.py` is the only module that holds both.
+
+### The API
+
+| Endpoint | What it does |
+|---|---|
+| `GET /plan?from=&to=&depart=` | Every non-dominated itinerary. Each end is `agency:stop_id` or `lat,lon`, and the two mix freely. Ride legs carry the route's real geometry, clipped out of the GTFS shape. |
+| `GET /stops/search?q=` | Trigram autocomplete over both feeds' stops. |
+| `GET /stops/{agency}/{id}/departures` | The next departures, read off the router's own timetable so the board and the planner agree about holidays. |
+| `GET /geocode?q=` | Address to coordinates. Proxied server-side because Nominatim's policy asks for a real User-Agent and one request a second, which a browser tab cannot promise. |
+| `GET /realtime/status` | Whether live data is flowing, and how old each feed is. |
+| `GET /realtime/vehicles` · `/realtime/alerts` | Snapshots, for callers that would rather not hold a socket open. |
+| `WS /ws/vehicles` | Live positions. Opens with the current snapshot, then forwards each poll. Every frame is a whole snapshot, never a diff, so a dropped frame costs nothing and reconnection needs no reconciliation. |
+
+```bash
+curl 'localhost:8001/plan?from=theride:1605&to=mbus:207&depart=2026-09-10T09:00'
+```
 
 ### Health checks
 
@@ -80,8 +134,9 @@ Then: API docs at <http://localhost:8001/docs>, app at <http://localhost:5174>.
 
 ```bash
 cd backend
-./.venv/bin/pytest              # 83 tests, offline
-./.venv/bin/pytest -m network   # 8 more, against the live agency feeds
+./.venv/bin/pytest              # 308 tests
+./.venv/bin/pytest -m slow      # the 500-case differential
+./.venv/bin/pytest -m network   # against the live agency feeds
 ./.venv/bin/ruff check ..
 ```
 
@@ -89,7 +144,8 @@ Two markers keep the default run fast and self-contained:
 
 | Marker | Behaviour |
 |---|---|
-| `network` | Deselected by default. Hits the live feeds — run before trusting anything about the data. |
+| `network` | Deselected by default. Hits the live feeds and the geocoder — run before trusting anything about the data. |
+| `slow` | Deselected by default. The full 500-case differential between the two engines. |
 | `db` | Runs by default, but **skips itself** when Postgres is unreachable, so the suite still passes on a plane. |
 
 `db` tests use their own `a2transit_test` database, created on demand. They
@@ -112,8 +168,9 @@ cd backend
 ./.venv/bin/python -m a2transit.ingest
 ```
 
-Creates the schema on first run, then loads both agencies and prints row counts
-per table. Unchanged feeds are skipped, so this is safe to run on a schedule —
+Creates the schema on first run, loads both agencies, then rebuilds everything
+derived from them — RAPTOR patterns and the PostGIS footpath table. Unchanged
+feeds are skipped, so this is safe to run on a schedule —
 TheRide's licence requires refreshing within three business days of a new
 publication:
 
@@ -135,7 +192,8 @@ Current scale (2026-08-23 feeds):
 | shape points | 73,507 | 19,102 | 92,609 |
 | **all tables** | **185,005** | **136,695** | **321,700** |
 
-Full load takes ~2.5 s.
+Full load takes ~2.5 s. Preprocessing then derives 117 route patterns and
+**8,308 footpaths** (1,456 of them between the two agencies) in under a second.
 
 ## Planning a trip
 
@@ -143,21 +201,28 @@ Full load takes ~2.5 s.
 cd backend
 ./.venv/bin/python -m a2transit.routing --search "YTC"
 ./.venv/bin/python -m a2transit.routing \
-    --from theride:544 --to theride:1019 --depart 2026-09-10T09:00 -v
+    --from theride:1605 --to mbus:207 --depart 2026-09-10T09:00 -v
+./.venv/bin/python -m a2transit.routing \
+    --from-place "Kerrytown, Ann Arbor" --to-place "Michigan Stadium" \
+    --depart 2026-09-10T09:00
 ```
 
 ```
-EB Washtenaw + Brookside -> E - First north of Frederick
-  depart Thu 2026-09-10 09:00  arrive 09:37  (37 min, 1 transfer)
-    09:00 EB Washtenaw + Brookside  --[theride 4 to Ypsilanti Transit Ctr]-->
-    09:10 YTC - EndPt
-    09:10 transfer to YTC - Stop 1 (20 min incl. wait)
-    09:30 YTC - Stop 1  --[theride 47 to Hewitt & Ellsworth]-->
-    09:37 E - First north of Frederick
+Temp BTC endpt -> Central Campus Transit Center: Ruthven Museum
+  depart Thu 2026-09-10 09:00  arrive 09:12  (12 min, 1 transfer)
+    09:00 transfer to WB Washington + Fifth (1) (2 min incl. wait)
+    09:02 WB Washington + Fifth (1)  --[theride 4]-->
+    09:06 S - Huron  east of Ingalls
+    09:06 transfer to Rackham Bldg (3 min incl. wait)
+    09:08 Rackham Bldg  --[mbus CS]-->
+    09:10 Central Campus Transit Center: Chemistry
+    09:10 transfer to Central Campus Transit Center: Ruthven Museum (2 min incl. wait)
 ```
 
-A bare `stop_id` is rejected when both feeds use it — 90 do, as different
-places — so stops are written `agency:stop_id`.
+That journey uses both agencies and could not be answered before M4. A bare
+`stop_id` is rejected when both feeds use it — 90 do, as different places — so
+stops are written `agency:stop_id`. An endpoint may equally be an address
+(`--from-place`, geocoded) or a coordinate pair (`--from-latlon`).
 
 ### Two engines
 
@@ -169,17 +234,60 @@ what makes it a trustworthy oracle rather than a second opinion.
 
 | | RAPTOR | Dijkstra |
 |---|---:|---:|
-| p50, routable queries | **1.4 ms** | 114 ms |
-| p95, routable queries | **2.2 ms** | 167 ms |
-| Timetable build | 330 ms | 560 ms |
+| p50 | **2.6 ms** | 68 ms |
+| p95 | **5.6 ms** | 275 ms |
+| Timetable build | 340 ms | 520 ms |
 | Criteria | earliest arrival **and** fewest transfers | earliest arrival |
 
-RAPTOR is roughly **80x faster** on queries that return a journey, against an
-acceptance target of 50 ms. The network is small — 42 GTFS routes become 117
-patterns over 2,498 pattern-stops — so a round is ~2,500 stop visits, where the
-Dijkstra searches a 116,000-node graph.
+RAPTOR is roughly **26x faster** at p50 and 50x at p95, against an acceptance
+target of 50 ms. Both engines got slower when M4 added 8,308 footpaths, which
+is the cost of the two networks being one; RAPTOR went from 1.4 ms to 2.6 ms.
+
+The network is small — 42 GTFS routes become 117 patterns over 2,498
+pattern-stops — so a round is ~2,500 stop visits, where the Dijkstra searches a
+113,000-node, 394,000-edge graph.
+
+Footpaths could have made that graph five times larger. Every walk landing at
+its own exact time would add ~467,000 nodes; instead a walk edge points at the
+first platform node at or after it lands, because landing is only ever a
+prelude to boarding and every departure is already a platform time. Node count
+is unchanged, and walks originate only at vehicle arrivals and the origin —
+which is what makes a second walk in a row structurally impossible rather than
+merely discouraged.
 
 Pick an engine with `--algorithm raptor|dijkstra`, or run both with `--compare`.
+
+### Walking, and why it took a milestone
+
+Footpaths are what make "TheRide + MBus as one network" true rather than
+aspirational. Before them the two agencies touched nowhere: they publish 15
+usable transfers between them, all TheRide's, all inside Ypsilanti Transit
+Center, so a TheRide-to-MBus query correctly returned nothing.
+
+One `ST_DWithin` self-join over the GiST index on `stops.geog` produces 8,308
+directed links at 400 m, 1,456 of them crossing between the feeds. Three things
+had to change together, because changing any one alone makes the two engines
+disagree:
+
+1. **Both engines read the same table.** That retired a transitive closure both
+   of them ran to work around TheRide declaring `103→108` and `108→101` and no
+   `103→101`. The retired algorithm now lives in the test that justified its
+   deletion, applied to the live feed: every edge it invents exists directly in
+   the 400 m set.
+2. **Walking into a stop is arriving there.** Both engines targeted vehicle
+   arrivals only, so a rider dropped 100 m from their destination was told the
+   trip was impossible.
+3. **A place is a stop no vehicle serves.** An arbitrary lat/lon becomes a
+   synthetic stop joined to the network by footpaths, so neither engine needs
+   any notion of a place — and door-to-door queries are differentially tested
+   by exactly the machinery that tests stop-to-stop ones.
+
+The differential earned its keep here. It caught RAPTOR pruning a vehicle
+arrival against an earlier arrival *on foot* at the same stop, which is
+tempting and wrong: only a vehicle arrival licenses walking onward, so the
+better-looking label was the unusable one. Four of 500 cases, all on one
+Saturday, all found by comparing against an engine that cannot make that
+mistake because it does not have the concept.
 
 ### How the second criterion is verified
 
@@ -206,10 +314,15 @@ differently and not a disagreement.
 
 Known limitations, all deliberate:
 
-- **No cross-agency itineraries yet.** The feeds share no `stop_id`, and the only
-  inter-stop links in the data are TheRide's 17 declared transfers, all inside
-  Ypsilanti Transit Center. PostGIS footpaths in M4 are what join the two
-  networks; until then a TheRide-to-MBus query correctly returns nothing.
+- **Walking is a straight line with a detour allowance.** Distances come from
+  PostGIS `ST_Distance` over `geography` and are multiplied by 1.3 before
+  becoming seconds. A real network router (OSRM) would do better, and is
+  deliberately kept off the critical path: it is a rate-limited demo server
+  with no SLA, and a journey planner must not stop working because someone
+  else's free service is busy.
+- **One footpath per leg, never two in a row.** A rider may walk at most 400 m
+  between vehicles, and 800 m to reach the network or leave it. Chaining walks
+  would let the planner route someone across town on foot in a round.
 - **Tight timed transfers at pulse points are rejected.** Every TheRide transfer
   declares `min_transfer_time = 10 s` across bays up to 71 m apart — 25 km/h on
   foot — so a 60 s floor is applied instead. TheRide does hold connecting buses
@@ -271,9 +384,10 @@ days of a new publication:
 GTFS static (TheRide + MBus)  ──▶  ingest job  ──▶  Postgres + PostGIS
                                                         │
                                           preprocessing: RAPTOR route-patterns,
-                                          stop→routes index, footpaths (PostGIS)
+                                          stop→routes index, footpaths (PostGIS
+                                          ST_DWithin, 400 m, cross-agency)
                                                         │
-GTFS-Realtime (both agencies)  ──▶  poller  ──▶  Redis  ──▶  routing engine (RAPTOR)
+GTFS-Realtime (both agencies)  ──▶  poller  ──▶  Redis  ──▶  timetable overlay
                                              │                   │
                                              │            FastAPI /plan endpoint
                                              │                   │
@@ -316,16 +430,21 @@ bus.
       fewest-transfers.
       *Done: 0 mismatches over 500 seeded differential cases; p50 1.4 ms on
       routable queries against Dijkstra's 114 ms.*
-- [ ] **M4 — Walking / footpaths.** PostGIS `ST_DWithin` stop→stop links
-      (~400 m, cross-agency included); connect arbitrary lat/lon to nearby
-      stops. *Door-to-door plan between two street addresses.*
-- [ ] **M5 — HTTP API.** `/plan`, `/stops/search`, `/stops/{id}/departures`.
-      *OpenAPI at `/docs`; every endpoint tested.*
-- [ ] **M6 — Frontend.** Geocoding, stop autocomplete, route drawn on the map,
-      itinerary panel. *Mobile-responsive, deployed-quality.*
-- [ ] **M7 — Realtime.** Poll GTFS-RT into Redis; delay-adjusted arrival times;
-      WebSocket vehicle markers and alerts. *Simulated delay moves an
-      itinerary's arrival time and a marker live.*
+- [x] **M4 — Walking / footpaths.** PostGIS `ST_DWithin` stop→stop links
+      (400 m, cross-agency included); arbitrary lat/lon joined to nearby stops.
+      *Done: 8,308 footpaths, 1,456 across agencies; door-to-door between two
+      street addresses; 0 mismatches over 500 differential cases after the
+      differential caught two engine bugs.*
+- [x] **M5 — HTTP API.** `/plan`, `/stops/search`, `/stops/{id}/departures`,
+      `/geocode`. *Done: OpenAPI at `/docs`; the Pareto set with each ride leg's
+      real shape; timetables cached per service date.*
+- [x] **M6 — Frontend.** Geocoding, stop autocomplete, route drawn on the map,
+      itinerary panel. *Done: one field takes a stop or an address; mobile
+      layout; walk legs dashed, rides drawn along the published shape.*
+- [x] **M7 — Realtime.** Poll GTFS-RT into Redis; delay-adjusted arrival times;
+      WebSocket vehicle markers and alerts. *Done: ~250 predictions folded into
+      the timetable in 50 ms; a 15-minute delay on route 4's 06:02 does not just
+      move the arrival, it moves the rider to the 06:10.*
 - [ ] **M8 — Polish + deploy.** Shareable trip URLs, live departures board,
       error and empty states, all four tiers on free plans. *Public URL.*
 - [ ] **M9 — Measure.** Feed scale, query latency p50/p95, correctness

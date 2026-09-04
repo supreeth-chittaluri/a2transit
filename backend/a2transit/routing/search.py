@@ -63,8 +63,12 @@ def _search(
     parents: list[int] = [-1] * graph.node_count
     settled = bytearray(graph.node_count)
 
-    # Any arrival at the destination where the rider is allowed to get off.
+    # Being at the destination is the goal, however the rider got there: any
+    # arrival where they may get off, and any platform node, which is where a
+    # walk that ends here lands. Nodes still come off the queue in time order,
+    # so the first target popped is still the earliest possible arrival.
     targets = set(graph.arrival_nodes.get(destination_stop, ()))
+    targets.update(graph.transfer_nodes.get(destination_stop, ()))
 
     queue: list[tuple[int, int]] = [(graph.node_time[source], source)]
     settled_count = 0
@@ -113,6 +117,12 @@ def _path_to_legs(
     The path alternates between platform stretches and vehicle stretches. A run
     of nodes on one trip instance becomes one RideLeg; the gap between alighting
     and the next boarding becomes one TransferLeg.
+
+    A journey may also *begin* on foot, now that the origin can walk to a nearby
+    stop and board there. Without a leg for that the itinerary's first ride
+    departs from somewhere the rider was never said to be, and the chaining
+    invariant — every leg starting where the last one ended — fails on a
+    journey that is perfectly correct.
     """
     legs: list[Leg] = []
 
@@ -127,6 +137,16 @@ def _path_to_legs(
 
         if kind == NodeKind.DEPARTURE and boarded_at is None:
             boarded_at = position
+            if last_alight_node is None and graph.node_stop[node] != graph.node_stop[path[0]]:
+                # The rider walked away from the origin before boarding.
+                legs.append(
+                    TransferLeg(
+                        from_stop=stop_of(path[0]),  # type: ignore[arg-type]
+                        to_stop=stop_of(node),  # type: ignore[arg-type]
+                        depart=timetable.absolute_time(graph.node_time[path[0]]),
+                        arrive=timetable.absolute_time(graph.node_time[node]),
+                    )
+                )
             if last_alight_node is not None:
                 legs.append(
                     TransferLeg(
@@ -170,6 +190,21 @@ def _path_to_legs(
                 )
                 boarded_at = None
                 last_alight_node = node
+
+    # The path ends on a platform node when the rider walked the last stretch,
+    # or when they never boarded anything at all.
+    final = path[-1]
+    if graph.node_kind[final] == NodeKind.TRANSFER:
+        from_node = last_alight_node if last_alight_node is not None else path[0]
+        if graph.node_stop[from_node] != graph.node_stop[final]:
+            legs.append(
+                TransferLeg(
+                    from_stop=stop_of(from_node),  # type: ignore[arg-type]
+                    to_stop=stop_of(final),  # type: ignore[arg-type]
+                    depart=timetable.absolute_time(graph.node_time[from_node]),
+                    arrive=timetable.absolute_time(graph.node_time[final]),
+                )
+            )
 
     return tuple(legs)
 
@@ -242,6 +277,7 @@ def plan(
         start_time=departure_seconds,
         horizon_seconds=horizon_seconds,
         origin=origin,
+        destination=destination,
     )
     return plan_on_graph(graph, timetable, origin, destination, departure_seconds)
 

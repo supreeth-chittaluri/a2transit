@@ -64,7 +64,10 @@ def _search_bounded(
 
     parents: list[int] = [-1] * state_count
     settled = bytearray(state_count)
+    # Being at the destination, however the rider got there — the same target
+    # set the unbounded search uses, so the two oracles answer one question.
     targets = set(graph.arrival_nodes.get(destination_stop, ()))
+    targets.update(graph.transfer_nodes.get(destination_stop, ()))
 
     start_state = source * width
     queue: list[tuple[int, int]] = [(graph.node_time[source], start_state)]
@@ -174,6 +177,7 @@ def bounded_curve(
         start_time=departure_seconds,
         horizon_seconds=horizon_seconds,
         origin=origin,
+        destination=destination,
     )
     return tuple(
         plan_bounded(graph, timetable, origin, destination, departure_seconds, budget)

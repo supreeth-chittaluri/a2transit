@@ -4,10 +4,17 @@
     python -m a2transit.routing --search "Blake"
     python -m a2transit.routing --from theride:544 --to theride:1019 \
         --depart 2026-09-10T09:00 --verbose
+    python -m a2transit.routing --from-place "Kerrytown, Ann Arbor" \
+        --to-place "Michigan Stadium" --depart 2026-09-10T09:00
+    python -m a2transit.routing --from-latlon 42.2846,-83.7454 --to-latlon 42.2658,-83.7486
 
 Stops are given as `agency:stop_id` or a bare `stop_id`. A bare id is rejected
 when both feeds use it — 90 of them do, and they are different places, so
 guessing would silently plan a journey in the wrong city district.
+
+An endpoint may equally be an address (`--from-place`, geocoded) or a
+coordinate pair (`--from-latlon`). Either becomes a stop no vehicle serves,
+joined to the network by footpaths, so the engines need no notion of a place.
 """
 
 from __future__ import annotations
@@ -22,10 +29,19 @@ from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
 from a2transit.db.session import get_engine
+from a2transit.geocode import GeocodingError, geocode, parse_latlon
 from a2transit.routing.compare import Case, compare_cases
 from a2transit.routing.engine import plan_with_raptor
 from a2transit.routing.graph import DEFAULT_HORIZON_SECONDS
 from a2transit.routing.patterns import build_raptor_timetable
+from a2transit.routing.places import (
+    ACCESS_MAX_METRES,
+    Place,
+    PlaceAttachment,
+    attach_places,
+    with_places,
+    with_places_raptor,
+)
 from a2transit.routing.search import PlanningError, plan
 from a2transit.routing.timetable import StopKey, build_timetable
 
@@ -100,6 +116,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--search", metavar="TEXT", help="List stops whose name contains TEXT.")
     parser.add_argument("--from", dest="origin", metavar="STOP", help="Origin, agency:stop_id.")
     parser.add_argument("--to", dest="destination", metavar="STOP", help="Destination.")
+    parser.add_argument("--from-place", metavar="ADDRESS", help="Origin as an address.")
+    parser.add_argument("--to-place", metavar="ADDRESS", help="Destination as an address.")
+    parser.add_argument("--from-latlon", metavar="LAT,LON", help="Origin as coordinates.")
+    parser.add_argument("--to-latlon", metavar="LAT,LON", help="Destination as coordinates.")
     parser.add_argument(
         "--depart",
         metavar="ISO8601",
@@ -127,9 +147,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-v", "--verbose", action="store_true", help="Show search statistics.")
 
     args = parser.parse_args(argv)
-    if not args.search and not (args.origin and args.destination):
-        parser.error("give --search, or both --from and --to")
+    has_origin = args.origin or args.from_place or args.from_latlon
+    has_destination = args.destination or args.to_place or args.to_latlon
+    if not args.search and not (has_origin and has_destination):
+        parser.error(
+            "give --search, or an origin (--from / --from-place / --from-latlon) "
+            "and a destination (--to / --to-place / --to-latlon)"
+        )
     return args
+
+
+def _resolve_place(address: str | None, latlon: str | None) -> Place | None:
+    """An endpoint given as a place rather than a stop, if there is one."""
+    if latlon:
+        return parse_latlon(latlon)
+    if address:
+        result = geocode(address)
+        logger.debug("geocoded %r via %s to %r", address, result.provider, result.place)
+        return result.place
+    return None
 
 
 def _plan_with_raptor(
@@ -139,10 +175,13 @@ def _plan_with_raptor(
     departure: dt.datetime,
     *,
     verbose: bool,
+    attachment: PlaceAttachment | None = None,
 ) -> int:
     """RAPTOR returns every non-dominated option, so print the whole set."""
     build_started = time.perf_counter()
     timetable = build_raptor_timetable(engine, departure.date())
+    if attachment is not None:
+        timetable = with_places_raptor(timetable, attachment)
     build_seconds = time.perf_counter() - build_started
 
     outcome = plan_with_raptor(timetable, origin, destination, departure)
@@ -178,10 +217,12 @@ def _compare(
     origin: StopKey,
     destination: StopKey,
     departure: dt.datetime,
+    *,
+    attachment: PlaceAttachment | None = None,
 ) -> int:
     """Run both engines on one query and say whether they agree."""
     case = Case(0, origin, destination, departure)
-    comparison = compare_cases(engine, (case,))[0]
+    comparison = compare_cases(engine, (case,), attachment=attachment)[0]
 
     print(comparison.describe())
     print()
@@ -218,22 +259,64 @@ def main(argv: list[str] | None = None) -> int:
 
     departure = dt.datetime.fromisoformat(args.depart) if args.depart else dt.datetime.now()
 
+    attachment: PlaceAttachment | None = None
     try:
-        origin = resolve_stop(engine, args.origin)
-        destination = resolve_stop(engine, args.destination)
-    except StopReferenceError as exc:
+        origin_place = _resolve_place(args.from_place, args.from_latlon)
+        destination_place = _resolve_place(args.to_place, args.to_latlon)
+    except GeocodingError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        print("hint: find a stop with --search", file=sys.stderr)
         return 2
 
+    if (origin_place is None) != (destination_place is None):
+        # Mixing a stop and a place is perfectly meaningful, and the synthetic
+        # stop machinery handles it — but only one end is a place, so the other
+        # needs its own coordinates to attach against.
+        print(
+            "error: give both ends as places, or both as stops "
+            "(a stop's coordinates are not yet accepted as a place)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if origin_place is not None and destination_place is not None:
+        attachment = attach_places(engine, origin_place, destination_place)
+        if not attachment.is_routable:
+            print(
+                f"error: nothing within {int(ACCESS_MAX_METRES)} m of "
+                f"{'the origin' if not attachment.origin_stops else 'the destination'}",
+                file=sys.stderr,
+            )
+            return 1
+        origin, destination = attachment.origin, attachment.destination
+        if args.verbose:
+            print(f"  {origin_place.name}")
+            for nearby in attachment.origin_stops[:3]:
+                print(f"    {nearby.metres:5.0f} m to {nearby.name}")
+            print(f"  {destination_place.name}")
+            for nearby in attachment.destination_stops[:3]:
+                print(f"    {nearby.metres:5.0f} m to {nearby.name}")
+            print()
+    else:
+        try:
+            origin = resolve_stop(engine, args.origin)
+            destination = resolve_stop(engine, args.destination)
+        except StopReferenceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            print("hint: find a stop with --search", file=sys.stderr)
+            return 2
+
     if args.compare:
-        return _compare(engine, origin, destination, departure)
+        return _compare(engine, origin, destination, departure, attachment=attachment)
 
     if args.algorithm == "raptor":
-        return _plan_with_raptor(engine, origin, destination, departure, verbose=args.verbose)
+        return _plan_with_raptor(
+            engine, origin, destination, departure, verbose=args.verbose, attachment=attachment
+        )
 
     build_started = time.perf_counter()
     timetable = build_timetable(engine, departure.date())
+    if attachment is not None:
+        timetable = with_places(timetable, attachment)
     build_seconds = time.perf_counter() - build_started
 
     query_started = time.perf_counter()

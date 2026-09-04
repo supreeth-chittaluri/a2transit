@@ -16,10 +16,10 @@ from a2transit.routing.graph import build_graph
 from a2transit.routing.models import RideLeg, TransferLeg
 from a2transit.routing.search import PlanningError, plan_on_graph
 from a2transit.routing.timetable import (
+    Footpath,
     Route,
     Stop,
     Timetable,
-    TransferLink,
     Trip,
     TripInstance,
     TripStop,
@@ -64,9 +64,9 @@ def _trip(
     )
 
 
-def _timetable(trips: list[Trip], transfers: tuple[TransferLink, ...] = ()) -> Timetable:
+def _timetable(trips: list[Trip], footpaths: tuple[Footpath, ...] = ()) -> Timetable:
     stop_ids = {ts.stop[1] for trip in trips for ts in trip.stops}
-    for link in transfers:
+    for link in footpaths:
         stop_ids |= {link.from_stop[1], link.to_stop[1]}
     routes = {(A, trip.route_id) for trip in trips}
     return Timetable(
@@ -74,7 +74,7 @@ def _timetable(trips: list[Trip], transfers: tuple[TransferLink, ...] = ()) -> T
         stops={(A, sid): _stop(sid) for sid in stop_ids},
         routes={key: Route(key, key[1], f"Route {key[1]}", None) for key in routes},
         instances=tuple(TripInstance(trip, DAY, 0) for trip in trips),
-        transfers=transfers,
+        footpaths=footpaths,
     )
 
 
@@ -207,13 +207,13 @@ class TestTransfers:
         assert result.itinerary.transfer_count == 1
 
     def test_declared_transfer_between_nearby_stops_is_used(self) -> None:
-        link = TransferLink((A, "HUB_A"), (A, "HUB_B"), 60, 10, 29.2)
+        link = Footpath((A, "HUB_A"), (A, "HUB_B"), 60, 10, 29.2)
         timetable = _timetable(
             [
                 _trip("IN", "1", [("X", 8 * HOUR), ("HUB_A", 8 * HOUR + 600)]),
                 _trip("OUT", "2", [("HUB_B", 8 * HOUR + 1200), ("Z", 8 * HOUR + 1800)]),
             ],
-            transfers=(link,),
+            footpaths=(link,),
         )
 
         result = _plan(timetable, "X", "Z", 8 * HOUR)

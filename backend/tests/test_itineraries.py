@@ -19,11 +19,11 @@ import pytest
 from sqlalchemy import Engine, text
 
 from a2transit.db.models import AgencySource
-from a2transit.ingest.loader import load_from_path
+from a2transit.routing.constants import walking_seconds
 from a2transit.routing.models import RideLeg, TransferLeg
 from a2transit.routing.search import plan
 from a2transit.routing.timetable import Timetable, build_timetable
-from tests.conftest import DATA_DIR
+from tests.conftest import load_real_feeds
 
 pytestmark = pytest.mark.db
 
@@ -36,11 +36,7 @@ MBUS = AgencySource.MBUS
 
 @pytest.fixture(scope="module")
 def engine(db_engine: Engine) -> Engine:
-    for agency, filename in ((THERIDE, "theride.zip"), (MBUS, "mbus.zip")):
-        path = DATA_DIR / filename
-        if not path.exists():
-            pytest.skip(f"{path} not present; run `python -m a2transit.ingest`")
-        load_from_path(db_engine, agency, path)
+    load_real_feeds(db_engine)
     return db_engine
 
 
@@ -87,59 +83,79 @@ class TestPair1DirectTrip:
         assert itinerary.transfer_count == 0
 
 
-class TestPair2TransferWithSlack:
-    """Route 4 -> route 47 across the Ypsilanti Transit Center, 20 minutes' slack.
+class TestPair2TransferAtYpsilantiTransitCenter:
+    """Route 4 into Ypsilanti Transit Center, then onward — 544 -> 1019.
 
-        -- outbound leg
+        -- the outbound leg
         SELECT stop_sequence, stop_id, departure_time FROM stop_times
          WHERE agency_source='theride' AND trip_id='3777020'
            AND stop_id IN ('544','170');            -- 09:00:15 -> 09:10:00
-        -- the declared transfer
-        SELECT min_transfer_time, ST_Distance(a.geog,b.geog) FROM transfers t ...
-         WHERE from_stop_id='170' AND to_stop_id='101';   -- 10 s declared, 29.2 m
-        -- inbound leg
-        SELECT stop_sequence, stop_id, departure_time FROM stop_times
-         WHERE agency_source='theride' AND trip_id='3408020'
-           AND stop_id IN ('101','1019');           -- 09:30:00 -> 09:37:10
+        -- the walk between bays, now a footpath rather than a declared transfer
+        SELECT metres, seconds FROM footpaths
+         WHERE from_agency_source='theride' AND from_stop_id='170'
+           AND to_agency_source='theride'   AND to_stop_id='113';
 
-    Chosen deliberately with generous slack rather than a tight pulse: TheRide
-    holds connecting buses at its pulse points, but GTFS gives no way to say so
-    (that needs transfer_type=1, which neither feed publishes), so the 60 s
-    floor rejects tight timed connections. See the known-limitation test below.
+    Through M3 this arrived 09:37:10 on one transfer, because the only walks
+    the engines knew were the fifteen TheRide declares. With 8,308 footpaths
+    there are more bays to reach and more stops near the destination, and the
+    answer is 09:23 with two — including a final 2-minute walk, which is the
+    other half of what M4 changed. Both engines agree on it; see --compare.
     """
 
-    def test_uses_the_declared_ytc_transfer(self, engine: Engine, thursday: Timetable) -> None:
+    def test_arrives_by_the_earliest_route_through_ypsilanti(
+        self, engine: Engine, thursday: Timetable
+    ) -> None:
         result = plan(
             engine, (THERIDE, "544"), (THERIDE, "1019"), _at(THURSDAY, 9), timetable=thursday
         )
 
         itinerary = result.itinerary
         assert itinerary is not None
-        assert [type(leg) for leg in itinerary.legs] == [RideLeg, TransferLeg, RideLeg]
-        assert itinerary.transfer_count == 1
-
-        first, transfer, second = itinerary.legs
+        assert itinerary.arrival == dt.datetime(2026, 9, 10, 9, 23, 26)
+        first = itinerary.ride_legs[0]
         assert (first.trip_id, first.route_label) == ("3777020", "4")
         assert first.depart == dt.datetime(2026, 9, 10, 9, 0, 15)
         assert first.arrive == dt.datetime(2026, 9, 10, 9, 10)
 
-        assert not transfer.is_same_stop
-        assert (transfer.from_stop.stop_id, transfer.to_stop.stop_id) == ("170", "101")
-
-        assert (second.trip_id, second.route_label) == ("3408020", "47")
-        assert second.depart == dt.datetime(2026, 9, 10, 9, 30)
-        assert second.arrive == dt.datetime(2026, 9, 10, 9, 37, 10)
-
-    def test_the_connection_has_real_slack(self, engine: Engine, thursday: Timetable) -> None:
-        """20 minutes — not a pulse the transfer floor could plausibly break."""
+    def test_it_changes_bays_at_the_transit_centre_on_foot(
+        self, engine: Engine, thursday: Timetable
+    ) -> None:
         result = plan(
             engine, (THERIDE, "544"), (THERIDE, "1019"), _at(THURSDAY, 9), timetable=thursday
         )
 
-        rides = result.itinerary.ride_legs
-        slack = rides[1].depart - rides[0].arrive
+        transfer = result.itinerary.legs[1]
+        assert isinstance(transfer, TransferLeg)
+        assert not transfer.is_same_stop
+        assert transfer.from_stop.stop_id == "170"
 
-        assert slack == dt.timedelta(minutes=20)
+    def test_the_last_stretch_is_walked(self, engine: Engine, thursday: Timetable) -> None:
+        """Walking into the destination is arriving there, as of M4.
+
+        The 47 does not call at 1019 at a useful time; it drops the rider two
+        minutes away. Through M3 that was reported as not arriving at all.
+        """
+        result = plan(
+            engine, (THERIDE, "544"), (THERIDE, "1019"), _at(THURSDAY, 9), timetable=thursday
+        )
+        itinerary = result.itinerary
+
+        assert isinstance(itinerary.legs[-1], TransferLeg)
+        assert itinerary.legs[-1].to_stop.stop_id == "1019"
+        assert itinerary.ride_legs[-1].to_stop.stop_id != "1019"
+
+    def test_every_connection_clears_the_floor(
+        self, engine: Engine, thursday: Timetable
+    ) -> None:
+        """Three walks in this journey, none of them a 10-second sprint."""
+        result = plan(
+            engine, (THERIDE, "544"), (THERIDE, "1019"), _at(THURSDAY, 9), timetable=thursday
+        )
+
+        walks = [leg for leg in result.itinerary.legs if isinstance(leg, TransferLeg)]
+        assert len(walks) == 3
+        for walk in walks:
+            assert walk.duration >= dt.timedelta(seconds=60)
 
 
 class TestPair3PostMidnight:
@@ -196,13 +212,22 @@ class TestPair4HolidayService:
     """
 
     def test_reachable_on_an_ordinary_weekday(self, engine: Engine, thursday: Timetable) -> None:
+        """11:05 is the arrival; which vehicles get there is not pinned.
+
+        Before M4 this was NW then NES twice. It still can be — RAPTOR's
+        fewest-transfers option is exactly that journey — but M2 answers
+        earliest arrival and nothing else, so among the several ways to reach
+        215 at 11:05 it is free to prefer one that walks to a TheRide stop and
+        rides two of their buses first. That is a tie broken differently, not a
+        worse answer, and pinning the vehicles would assert a preference M2 does
+        not have.
+        """
         result = plan(engine, (MBUS, "207"), (MBUS, "215"), _at(THURSDAY, 10), timetable=thursday)
 
         itinerary = result.itinerary
         assert itinerary is not None
         assert itinerary.arrival == dt.datetime(2026, 9, 10, 11, 5)
-        assert itinerary.transfer_count == 2
-        assert [leg.route_label for leg in itinerary.ride_legs] == ["NW", "NES", "NES"]
+        assert itinerary.ride_legs[-1].route_label == "NES"
 
     def test_unreachable_on_labor_day(self, engine: Engine, labor_day: Timetable) -> None:
         """The calendar_dates exceptions are what make this come back empty."""
@@ -223,22 +248,49 @@ class TestPair4HolidayService:
         assert itinerary.ride_legs[0].trip_id != "2189020"
 
 
-class TestPair5Unreachable:
-    def test_cross_agency_is_unreachable_until_m4(
+class TestPair5CrossAgency:
+    """Blake Transit Center to Central Campus — the journey M4 exists for.
+
+    The feeds share no stop_id and the only links either agency declares are
+    TheRide's own bays at Ypsilanti Transit Center, so through M3 this returned
+    nothing, correctly. It is the footpaths that join the networks, and this is
+    the assertion that they do.
+
+        SELECT metres FROM footpaths
+         WHERE from_agency_source='theride' AND to_agency_source='mbus';
+    """
+
+    def test_a_journey_now_crosses_between_the_agencies(
         self, engine: Engine, thursday: Timetable
     ) -> None:
-        """Blake Transit Center to Central Campus — 2 km apart, no path in M2.
-
-        The feeds share no stop_id, and the only inter-stop links are TheRide's
-        own YTC transfers, so nothing joins the two networks. PostGIS footpaths
-        in M4 are what make this answerable; until then an empty result is
-        correct rather than a bug.
-        """
         result = plan(
             engine, (THERIDE, "1605"), (MBUS, "207"), _at(THURSDAY, 9), timetable=thursday
         )
 
-        assert result.itinerary is None
+        itinerary = result.itinerary
+        assert itinerary is not None
+        assert itinerary.arrival == dt.datetime(2026, 9, 10, 9, 12)
+        assert {leg.agency for leg in itinerary.ride_legs} == {THERIDE, MBUS}
+
+    def test_the_journey_changes_agency_across_a_walk(
+        self, engine: Engine, thursday: Timetable
+    ) -> None:
+        """The crossing happens on foot, because no vehicle serves both feeds."""
+        result = plan(
+            engine, (THERIDE, "1605"), (MBUS, "207"), _at(THURSDAY, 9), timetable=thursday
+        )
+
+        rides = result.itinerary.ride_legs
+        crossings = [
+            (before, after)
+            for before, after in zip(rides, rides[1:], strict=False)
+            if before.agency is not after.agency
+        ]
+
+        assert crossings
+        for before, after in crossings:
+            assert before.to_stop.key != after.from_stop.key
+            assert after.depart >= before.arrive
 
     def test_an_overnight_query_waits_for_the_first_morning_bus(
         self, engine: Engine, thursday: Timetable
@@ -316,14 +368,19 @@ class TestKnownLimitations:
     def test_tight_timed_transfers_at_pulse_points_are_rejected(
         self, engine: Engine, thursday: Timetable
     ) -> None:
-        """Documented M2 limitation, asserted so it cannot regress silently.
+        """Documented limitation, asserted so it cannot regress silently.
 
         TheRide's declared transfers all claim min_transfer_time = 10 s across
-        bays up to 71 m apart — 25 km/h on foot. The 60 s floor overrides that,
-        which means a genuine held connection tighter than 60 s is rejected.
-        GTFS offers no way for the agency to mark a guaranteed timed transfer
-        that both feeds actually use, so there is nothing in the data to tell a
-        held connection from a coincidental one.
+        bays up to 70.5 m apart — 25 km/h on foot. The floor and the walking
+        time override that, which means a genuine held connection tighter than
+        60 s is rejected. GTFS offers no way for the agency to mark a guaranteed
+        timed transfer that both feeds actually use, so there is nothing in the
+        data to tell a held connection from a coincidental one.
+
+        The bound each transfer lands on is whichever of the two is larger. The
+        60 s floor covers everything under 60 m; the longest bay-to-bay walk at
+        Ypsilanti Transit Center is 70.5 m, so that one costs 71 s on its
+        walking time alone.
         """
         with engine.connect() as connection:
             declared = connection.execute(
@@ -334,14 +391,13 @@ class TestKnownLimitations:
             ).scalars().all()
 
         assert declared == [10]
-        for transfer in thursday.transfers:
-            if transfer.declared_seconds is None:
-                # Derived by transitive closure, so it has no feed value to
-                # compare against; it only has to clear the floor.
-                assert transfer.seconds >= 60
-                continue
-            assert transfer.seconds == 60
-            assert transfer.declared_seconds == 10
+        for footpath in thursday.footpaths:
+            assert footpath.seconds >= 60
+            assert footpath.seconds == max(
+                60, walking_seconds(footpath.distance_metres)
+            )
+            if footpath.is_declared:
+                assert footpath.declared_seconds == 10
 
 
 @pytest.fixture(scope="module")

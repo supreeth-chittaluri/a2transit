@@ -24,12 +24,17 @@ ARR -> DEP         stay on board through a stop
 DEP -> ARR         ride to the next stop
 ARR -> XFER        alight, arriving at the platform one transfer time later
 XFER -> XFER       wait for the next event at this stop
-XFER -> XFER       walk a declared transfer to a nearby stop
+XFER -> XFER       walk a footpath to a nearby stop
 XFER -> DEP        board a vehicle leaving at exactly this time
 
 Alighting costs a transfer time, boarding costs nothing: the wait chain already
 carries the rider forward to the departure's own time, so charging both would
 double-count.
+
+WALK edges do not create nodes. They point at the first platform node at or
+after the walk lands, because landing is only ever a prelude to boarding and
+every departure is already a platform time. Pass 4 explains what that buys and
+what it costs.
 
 Scope
 -----
@@ -139,12 +144,19 @@ def build_graph(
     start_time: int,
     horizon_seconds: int = DEFAULT_HORIZON_SECONDS,
     origin: StopKey | None = None,
+    destination: StopKey | None = None,
 ) -> TimeExpandedGraph:
     """Materialise the graph for [start_time, start_time + horizon_seconds].
 
     `origin` adds a XFER node at exactly `start_time` there, so a rider who
     arrives at their origin stop at that moment can board a vehicle leaving at
     that moment without waiting for the next scheduled event.
+
+    `destination` adds a node at the exact moment of every walk that ends there.
+    Everywhere else a walk is snapped forward to the next platform time, which
+    costs nothing because landing is only a prelude to boarding — but at the
+    destination the landing *is* the answer, and rounding it up to the next bus
+    would report a rider as arriving several minutes after they got there.
     """
     end_time = start_time + horizon_seconds
 
@@ -232,8 +244,11 @@ def build_graph(
     # Pass 2: platform (XFER) times per stop.
     #
     # A rider can be standing at a stop at: a time they alighted (plus the
-    # transfer floor), a time a vehicle departs, the query's own start time at
-    # the origin, or the far end of a declared transfer walk.
+    # transfer floor), a time a vehicle departs, or the query's own start time
+    # at the origin.
+    #
+    # Walking in adds no time of its own, which is the whole reason M4's 8,308
+    # footpaths do not overwhelm this graph — see the WALK pass below.
     # ------------------------------------------------------------------
     platform_times: dict[StopKey, set[int]] = defaultdict(set)
     for stop, times in alight_times.items():
@@ -243,24 +258,20 @@ def build_graph(
     if origin is not None:
         platform_times[origin].add(start_time)
 
-    # Declared transfers add arrival times at their far end. One hop only, and
-    # enforced by snapshotting the platform times first.
-    #
-    # Reading them live made chaining possible and, worse, order-dependent: if
-    # link 103->108 happened to be processed before 108->101, a rider could walk
-    # 103->108->101 even though the feed declares no 103->101 transfer, and if
-    # the order flipped they could not. That produced journeys boarding at a
-    # stop the rider had no declared way to reach, whose legs did not chain back
-    # to the origin. M4 replaces all of this with PostGIS footpaths, where
-    # 103->101 will exist directly and honestly.
-    base_platform_times = {stop: frozenset(times) for stop, times in platform_times.items()}
-    walk_targets: list[tuple[StopKey, int, StopKey, int]] = []
-    for link in timetable.transfers:
-        for time in base_platform_times.get(link.from_stop, ()):
-            landed = time + link.seconds
-            if start_time <= landed <= end_time:
-                platform_times[link.to_stop].add(landed)
-                walk_targets.append((link.from_stop, time, link.to_stop, landed))
+    # Exact landing times for walks that end at the destination. Their sources
+    # are the same ones pass 3 walks from: a vehicle arrival plus the floor, or
+    # the origin.
+    if destination is not None:
+        for footpath in timetable.footpaths:
+            if footpath.to_stop != destination:
+                continue
+            ready_times = set(alight_times.get(footpath.from_stop, ()))
+            if footpath.from_stop == origin:
+                ready_times.add(start_time)
+            for ready_at in ready_times:
+                landed = ready_at + footpath.seconds
+                if start_time <= landed <= end_time:
+                    platform_times[destination].add(landed)
 
     transfer_nodes: dict[StopKey, list[int]] = {}
     transfer_lookup: dict[tuple[StopKey, int], int] = {}
@@ -279,8 +290,59 @@ def build_graph(
         transfer_nodes[stop] = ids
 
     # ------------------------------------------------------------------
-    # Pass 3: edges that join vehicles to platforms.
+    # Pass 3: edges that join vehicles to platforms, and the footpaths out.
+    #
+    # A walk starts where RAPTOR starts one: at a vehicle arrival, or at the
+    # origin. Nowhere else. Two consequences follow, and both are load-bearing.
+    #
+    # **It costs no nodes.** The obvious construction gives every walk its own
+    # landing node at exactly t + w. With 8,308 footpaths at a mean out-degree
+    # of 7.1 that is ~467,000 new nodes on a graph of 113,000 — the reference
+    # implementation stops being usable and the 500-case differential stops
+    # being something anyone runs. But landing is only ever a prelude to
+    # boarding, and every departure is already a platform time, so the edge can
+    # point at the first platform node at or after the walk lands. Same
+    # journeys, no new nodes.
+    #
+    # **It cannot chain.** Snapping shares nodes between journeys, so if XFER
+    # nodes originated walks a rider could arrive at X on foot, land on some
+    # other rider's node, and walk on to Y — two hops, 800 m, and something
+    # RAPTOR would never answer. Because only ARR nodes and the origin have
+    # WALK edges, and an ARR node is reachable only by riding, a second walk
+    # requires a bus in between. That is exactly RAPTOR's rule, enforced by the
+    # shape of the graph rather than by remembering to enforce it.
+    #
+    # The floor is charged once, on getting off, then the walk on top:
+    # arrival + MIN_TRANSFER_SECONDS + footpath.seconds. Identical arithmetic to
+    # raptor.run_raptor, which is the point.
+    #
+    # What snapping deliberately loses is the exact moment a walk *ends*, which
+    # only matters when it ends where the rider was going.
     # ------------------------------------------------------------------
+    platform_times_at: dict[StopKey, list[int]] = {
+        stop: [node_time[node] for node in nodes] for stop, nodes in transfer_nodes.items()
+    }
+    footpaths_from: dict[StopKey, list[tuple[StopKey, int]]] = defaultdict(list)
+    for footpath in timetable.footpaths:
+        footpaths_from[footpath.from_stop].append((footpath.to_stop, footpath.seconds))
+
+    def walk_edges_from(node: int, stop: StopKey, ready_at: int) -> int:
+        """Link `node` to where a rider leaving `stop` at `ready_at` can walk."""
+        added = 0
+        for to_stop, seconds in footpaths_from.get(stop, ()):
+            landed = ready_at + seconds
+            if landed > end_time:
+                continue
+            candidates = transfer_nodes.get(to_stop)
+            if not candidates:
+                continue
+            position = bisect_left(platform_times_at[to_stop], landed)
+            if position < len(candidates):
+                adjacency[node].append((candidates[position], int(EdgeKind.WALK)))
+                added += 1
+        return added
+
+    walk_count = 0
     arrival_nodes: dict[StopKey, list[int]] = defaultdict(list)
     for node in range(len(node_time)):
         if node_kind[node] != int(NodeKind.ARRIVAL):
@@ -292,11 +354,11 @@ def build_graph(
             continue
 
         arrival_nodes[trip_stop.stop].append(node)
-        platform = transfer_lookup.get(
-            (trip_stop.stop, node_time[node] + MIN_TRANSFER_SECONDS)
-        )
+        ready_at = node_time[node] + MIN_TRANSFER_SECONDS
+        platform = transfer_lookup.get((trip_stop.stop, ready_at))
         if platform is not None:
             adjacency[node].append((platform, int(EdgeKind.ALIGHT)))
+        walk_count += walk_edges_from(node, trip_stop.stop, ready_at)
 
     for (stop, time), departure_ids in departures_at.items():
         platform = transfer_lookup.get((stop, time))
@@ -305,11 +367,15 @@ def build_graph(
         for departure_id in departure_ids:
             adjacency[platform].append((departure_id, int(EdgeKind.BOARD)))
 
-    for from_stop, time, to_stop, landed in walk_targets:
-        source = transfer_lookup.get((from_stop, time))
-        target = transfer_lookup.get((to_stop, landed))
-        if source is not None and target is not None:
-            adjacency[source].append((target, int(EdgeKind.WALK)))
+    # The origin is the one platform node that may walk. The rider is already
+    # standing there rather than getting off something, so no floor is charged —
+    # which is how RAPTOR seeds round 0 too.
+    if origin is not None:
+        origin_node = transfer_lookup.get((origin, start_time))
+        if origin_node is not None:
+            walk_count += walk_edges_from(origin_node, origin, start_time)
+
+    logger.debug("%d walk edges from %d footpaths", walk_count, len(timetable.footpaths))
 
     for stop in arrival_nodes:
         arrival_nodes[stop].sort(key=lambda node: node_time[node])
